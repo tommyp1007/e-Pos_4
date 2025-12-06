@@ -8,29 +8,48 @@ workflows:
       xcode: latest
       cocoapods: default
     scripts:
-      - name: Get Flutter packages
+      - name: Clean and Get Packages
         script: |
-          flutter packages pub get
-      
-      - name: Install CocoaPods
+          flutter clean
+          flutter pub get
+
+      - name: Install CocoaPods (Clean Install)
         script: |
-          find . -name "Podfile" -execdir pod install \;
+          # Go to iOS folder
+          cd ios
+          
+          # Remove existing Pods to force a refresh (Critical after Podfile changes)
+          rm -rf Pods
+          rm -rf Podfile.lock
+          
+          # Install fresh pods
+          pod install --repo-update
+          cd ..
 
       - name: Build iOS Release (No Code Signing)
         script: |
           # Build the .app bundle without signing
-          flutter build ios --release --no-codesign
+          # Note: We use --no-codesign to generate a raw .app bundle
+          flutter build ios --release --no-codesign --build-number=$BUILD_NUMBER
 
       - name: Create IPA from .app
         script: |
-          # Go to the build output directory
+          # Navigate to the build output directory
           cd build/ios/iphoneos
           
-          # Create the Payload folder structure required for an IPA
-          mkdir Payload
-          mv Runner.app Payload/
+          # 1. Clean up previous artifacts
+          rm -rf Payload
+          rm -rf *.ipa
           
-          # Zip the Payload folder into an .ipa file
-          zip -r epos_app_unsigned.ipa Payload
+          # 2. Create the Payload folder structure required by Apple
+          mkdir Payload
+          
+          # 3. Copy the Runner.app into Payload
+          cp -r Runner.app Payload/
+          
+          # 4. Zip the Payload folder into an .ipa file
+          # We name it clearly so you know it is unsigned
+          zip -r epos_pilot.ipa Payload
+
     artifacts:
       - build/ios/iphoneos/*.ipa
