@@ -67,7 +67,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     WidgetsBinding.instance.addObserver(this);
     _initPermissionsAndNotifications();
 
-    // Configure Pull-to-Refresh
     _pullToRefreshController = PullToRefreshController(
       options: PullToRefreshOptions(color: Colors.blue),
       onRefresh: () async {
@@ -113,7 +112,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     await Permission.camera.request();
     if (Platform.isAndroid) {
       if (await Permission.storage.request().isGranted) {
-        // Storage granted
       } else if (await Permission.manageExternalStorage.status.isDenied) {
         await Permission.manageExternalStorage.request();
       }
@@ -123,7 +121,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
   Future<void> _initNotifications() async {
     const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('launcher_icon');
+        AndroidInitializationSettings('@mipmap/ic_launcher'); 
     
     final DarwinInitializationSettings initializationSettingsDarwin =
         DarwinInitializationSettings(
@@ -176,9 +174,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         final RegExp tinRegex = RegExp(r'TIN\s*[:\n\r\s]+\s*([A-Z0-9]+)', caseSensitive: false);
         final match = tinRegex.firstMatch(rawData);
         if (match != null && match.group(1) != null) {
-          String extractedTin = match.group(1)!;
-          log("TIN Found: $extractedTin");
-          return extractedTin; 
+          return match.group(1)!;
         }
       } catch (e) {
         log("Error parsing TIN: $e");
@@ -188,7 +184,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   // ===========================================================================
-  // FILE HANDLING (SAVE & OPEN)
+  // FILE HANDLING
   // ===========================================================================
 
   Future<void> _openFile(String filePath) async {
@@ -196,7 +192,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       filePath = filePath.substring(7);
     }
 
-    // Open PDF Viewer if it's a PDF
     if (filePath.toLowerCase().endsWith('.pdf')) {
       if (mounted) {
         Navigator.push(
@@ -207,7 +202,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         );
       }
     } else {
-      // Fallback share for other files
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: const Text("File saved"),
@@ -224,7 +218,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     try {
       String fileName = suggestedFileName ?? "";
 
-      // --- 1. CUSTOM NAMING LOGIC ---
       if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
           String sanitizedRef = _currentOrderRef!.replaceAll('/', '_').replaceAll(' ', '_').trim();
           String sanitizedUuid = (_currentUuid != null && _currentUuid!.isNotEmpty && _currentUuid != 'null') 
@@ -232,7 +225,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               : "e-Invoice"; 
           
           fileName = "MyInvois e-POS_${sanitizedRef}_${sanitizedUuid}.pdf";
-          log("Using Custom Filename: $fileName");
       }
       else if (fileName.isEmpty || fileName.toLowerCase().contains("unknown")) {
         String extension = 'pdf';
@@ -245,7 +237,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         fileName += '.pdf';
       }
 
-      // --- 2. SAVE TO DISK ---
       String filePath = "";
       
       if (Platform.isAndroid) {
@@ -284,9 +275,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       }
     } catch (e) {
       log("Error saving file: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Save Error: $e")));
-      }
     }
   }
 
@@ -335,7 +323,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       await _processBlobUrl(url, suggestedFileName);
       return;
     }
-
     if (uri.scheme == 'data') {
       await _saveBase64ToFile(url, 'application/pdf', suggestedFileName);
       return;
@@ -381,7 +368,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   // ===========================================================================
-  // JS INJECTION (ODOO SCRAPING & HOOKS)
+  // JS INJECTION
   // ===========================================================================
 
   Future<void> _injectCustomJavaScript(InAppWebViewController controller) async {
@@ -389,7 +376,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       (function() {
         console.log("Injecting Odoo Mobile Hooks...");
 
-        // 1. SCRAPER FOR ORDER REF AND UUID
+        // 1. SCRAPER
         function scrapeTransactionDetails() {
             try {
                 var getValue = function(el) {
@@ -398,17 +385,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     if (el.tagName === 'SPAN' || el.tagName === 'DIV' || el.tagName === 'B') return el.innerText;
                     return null;
                 };
-
-                // Strategy A: Input Fields (Backend Forms)
                 var orderRef = getValue(document.querySelector('[name="name"]'));
                 var uuid = getValue(document.querySelector('[name="uuid"]'));
-
-                // Strategy B: Breadcrumbs / Title (If inputs missing)
                 if (!orderRef) {
                    var breadcrumb = document.querySelector('.o_breadcrumb .active');
                    if (breadcrumb) orderRef = breadcrumb.innerText;
                 }
-
                 if (orderRef) {
                     window.flutter_inappwebview.callHandler('TransactionInfoHandler', orderRef, uuid);
                 }
@@ -416,69 +398,69 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         }
         setInterval(scrapeTransactionDetails, 1500);
 
-        // 2. BARCODE SCANNER HANDLER
+        // 2. BARCODE SCANNER
         window.onFlutterBarcodeScanned = function(code) {
            console.log("Received barcode: " + code);
-           
            // A. PARTNER SEARCH
            var partnerSearchInput = document.querySelector('input[placeholder="Search Customers..."]') || document.querySelector('.sb-partner input');
            if (partnerSearchInput && partnerSearchInput.offsetParent !== null) {
-              partnerSearchInput.setAttribute('inputmode', 'none'); 
-              partnerSearchInput.focus();
-              partnerSearchInput.value = code;
-              partnerSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
-              partnerSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
-              partnerSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-              partnerSearchInput.blur();
-              setTimeout(() => { partnerSearchInput.removeAttribute('inputmode'); }, 200);
-              return;
+             partnerSearchInput.setAttribute('inputmode', 'none'); 
+             partnerSearchInput.focus();
+             partnerSearchInput.value = code;
+             partnerSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
+             partnerSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
+             partnerSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
+             partnerSearchInput.blur();
+             setTimeout(() => { partnerSearchInput.removeAttribute('inputmode'); }, 200);
+             return;
            }
 
            // B. PRODUCT SEARCH
            var productSearchInput = document.querySelector('input[placeholder="Search products..."]') || document.querySelector('input[placeholder="Carian produk..."]') || document.querySelector('.products-widget-control input');
            if (productSearchInput && productSearchInput.offsetParent !== null) {
-              productSearchInput.setAttribute('inputmode', 'none');
-              productSearchInput.focus();
-              productSearchInput.value = code;
-              productSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
-              productSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
-              productSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-              productSearchInput.blur();
-              setTimeout(() => { productSearchInput.removeAttribute('inputmode'); }, 200);
-              
-              setTimeout(function() {
+             productSearchInput.setAttribute('inputmode', 'none');
+             productSearchInput.focus();
+             productSearchInput.value = code;
+             productSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
+             productSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
+             productSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
+             productSearchInput.blur();
+             setTimeout(() => { productSearchInput.removeAttribute('inputmode'); }, 200);
+             
+             setTimeout(function() {
                  var plusIcon = document.querySelector('#qty_btn_product .fa-plus');
                  if (plusIcon && plusIcon.closest('a')) {
-                    plusIcon.closest('a').click();
+                   plusIcon.closest('a').click();
                  } else {
-                    var firstProduct = document.querySelector('article.product');
-                    if (firstProduct) firstProduct.click();
+                   var firstProduct = document.querySelector('article.product');
+                   if (firstProduct) firstProduct.click();
                  }
-              }, 700);
-              return;
+             }, 700);
+             return;
            }
 
            // C. FALLBACK
            window.dispatchEvent(new CustomEvent('barcode_scanned', { detail: code }));
            var target = document.activeElement || document.body;
            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-              target.setAttribute('inputmode', 'none');
-              target.value = code;
-              target.dispatchEvent(new Event('change', { bubbles: true }));
-              target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-              target.blur();
-              setTimeout(() => { target.removeAttribute('inputmode'); }, 200);
+             target.setAttribute('inputmode', 'none');
+             target.value = code;
+             target.dispatchEvent(new Event('change', { bubbles: true }));
+             target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+             target.blur();
+             setTimeout(() => { target.removeAttribute('inputmode'); }, 200);
            } else {
-              for (var i = 0; i < code.length; i++) {
+             for (var i = 0; i < code.length; i++) {
                  document.body.dispatchEvent(new KeyboardEvent('keypress', { key: code[i], char: code[i], bubbles: true }));
-              }
-              document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+             }
+             document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
            }
         };
 
-        // 3. BUTTON HIJACKING (For Native Scanner)
+
+        // 3. BUTTON HIJACKING
         function hijackButtons() {
-           var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode', 'button[name="action_open_label_layout"]'];
+           var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode'];
            selectors.forEach(function(sel) {
               var elements = document.querySelectorAll(sel);
               elements.forEach(function(el) {
@@ -497,22 +479,26 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         }
         setInterval(hijackButtons, 1000);
 
-        // 4. RECEIPT PRINTING HIJACKER (UPDATED FOR CUSTOM XML STYLE)
+        // 4. RECEIPT PRINTING HIJACKER
+        // We use event delegation on body to ensure we catch dynamically created buttons
         document.body.addEventListener('click', function(e) {
            var btn = e.target.closest('.button.print') || 
                      e.target.closest('.print-button') ||
                      e.target.closest('.btn-secondary'); 
 
-           if (btn) {
+           // Check if it's actually inside a POS screen context
+           var isPos = document.querySelector('.pos-receipt-container') || document.querySelector('.pos-content');
+
+           if (btn && isPos) {
               var receipt = document.querySelector('.pos-receipt');
               
               if (receipt) {
                  e.preventDefault(); 
-                 e.stopImmediatePropagation();
+                 e.stopImmediatePropagation(); 
 
                  var clone = receipt.cloneNode(true);
 
-                 // A. FIX IMAGE PATHS (Make absolute so Flutter PDF can render them)
+                 // Fix images
                  var images = clone.querySelectorAll('img');
                  var origin = window.location.origin; 
                  images.forEach(function(img) {
@@ -524,70 +510,38 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
                  var content = clone.outerHTML;
                  
-                 // B. EXTRACT REF
                  var extractedRef = null;
                  try {
                      var text = receipt.innerText || "";
-                     var match = text.match(/Order\s*[:\#]?\s*([A-Za-z0-9\-\/]+)/i);
+                     var match = text.match(/Order\\s*[:\\#]?\\s*([A-Za-z0-9\\-\\/]+)/i);
                      if(match && match[1]) extractedRef = match[1].trim();
                  } catch(err) {}
 
-                 // C. EXACT CSS (FROM YOUR XML REQUEST)
-                 // This mirrors the styling found in the Odoo QWeb XML provided.
                  var style = `
                     <style>
                         @import url('https://fonts.googleapis.com/css?family=Inconsolata:400,700&display=swap');
-                        
                         body { 
-                            font-family: 'Inconsolata', monospace; 
-                            background: white; 
-                            color: black; 
-                            margin: 0;
-                            padding: 10px;
-                            font-size: 13px; /* Base size found in XML */
+                           font-family: 'Inconsolata', monospace; 
+                           background: white; 
+                           color: black; 
+                           margin: 0; 
+                           padding: 10px; 
+                           font-size: 13px;
+                           /* Set a fixed width for the HTML rendering engine, e.g., 80mm in CSS px units */
+                           width: 302px; 
                         }
-                        
                         img { max-width: 100%; }
-                        
-                        /* Layout Utilities */
                         .text-center { text-align: center; }
                         .text-right { text-align: right; }
                         .fw-bold { font-weight: bold; }
                         .fs-6 { font-size: 14px; font-weight: bold; }
-                        
-                        /* Card Wrappers */
                         .card { border: none; width: 100%; } 
                         .card-body { padding: 0; }
-                        
-                        /* Tables */
-                        table { 
-                            width: 100%; 
-                            border-collapse: collapse; 
-                        }
-                        td, th { 
-                            vertical-align: top; 
-                            padding: 2px 0; 
-                        }
-                        
-                        /* Specific Receipt Styling from XML */
-                        .receipt-orderlines {
-                            border-style: double;
-                            border-left: none;
-                            border-right: none;
-                            border-bottom: none;
-                            width: 100%;
-                            margin-top: 5px;
-                        }
-                        
-                        .pos-receipt-title {
-                            font-weight: bold;
-                            font-size: 140%;
-                            text-align: center;
-                        }
-
+                        table { width: 100%; border-collapse: collapse; }
+                        td, th { vertical-align: top; padding: 2px 0; }
+                        .receipt-orderlines { border-style: double; border-left: none; border-right: none; border-bottom: none; width: 100%; margin-top: 5px; }
+                        .pos-receipt-title { font-weight: bold; font-size: 140%; text-align: center; }
                         ul { list-style-type: none; padding: 0; margin: 0; }
-                        
-                        /* Dashed Lines for Totals */
                         tr[style*="border-top: 1px dashed"] { border-top: 1px dashed black !important; }
                         tr[style*="border-bottom:1px dashed"] { border-bottom: 1px dashed black !important; }
                     </style>
@@ -595,12 +549,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
                  var fullHtml = '<html><head><meta charset="utf-8">' + style + '</head><body>' + content + '</body></html>';
                  
-                 // Pass html to Flutter to generate PDF
+                 // SEND TO FLUTTER
                  window.flutter_inappwebview.callHandler('PrintPosReceipt', fullHtml, extractedRef);
                  return false; 
               }
            }
-        });
+        }, true);
       })();
     """;
     await controller.evaluateJavascript(source: script);
@@ -722,19 +676,17 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         },
                       );
 
-                      // --- 4. PRINT HANDLER (GENERATE PDF & NAVIGATE) ---
+                      // --- 4. PRINT HANDLER (GENERATE PDF & NAVIGATE TO PREVIEW) ---
                       controller.addJavaScriptHandler(
                         handlerName: 'PrintPosReceipt',
                         callback: (args) async {
                           if (args.isNotEmpty) {
                             String receiptHtml = args[0].toString();
                             
-                            // Check if JS passed the Scraped Ref
                             if (args.length > 1 && args[1] != null && args[1].toString() != "null") {
                                 String extractedRef = args[1].toString();
                                 setState(() {
                                     _currentOrderRef = extractedRef;
-                                    log("Ref updated from Print Click: $_currentOrderRef");
                                 });
                             }
 
@@ -745,7 +697,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                                 );
                               }
                               
-                              // A. DEFINE FILENAME
                               String fileName = "Receipt";
                               if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
                                 fileName += "_${_currentOrderRef!.replaceAll('/', '_')}";
@@ -754,20 +705,20 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                               }
                               fileName += ".pdf";
 
-                              // B. GENERATE PDF BYTES
-                              // Standard POS roll width is 80mm.
-                              // We use the `printing` package to render the HTML from Odoo into a PDF.
+                              // === GENERATE PDF ===
+                              // **MODIFIED:** Removed PdfPageFormat.roll80. Using the default or PdfPageFormat.standard.
                               final Uint8List pdfBytes = await Printing.convertHtml(
                                 html: receiptHtml,
-                                format: PdfPageFormat.roll80, 
+                                // Use default/standard format. Size is controlled by HTML/CSS injected via JS.
+                                format: PdfPageFormat.standard, 
                               );
 
-                              // C. SAVE TO TEMP FILE
+                              // === SAVE TO TEMP ===
                               final tempDir = await getTemporaryDirectory();
                               final tempFile = File('${tempDir.path}/$fileName');
                               await tempFile.writeAsBytes(pdfBytes, flush: true);
 
-                              // D. OPEN VIEWER SCREEN
+                              // === NAVIGATE TO PDF VIEWER ===
                               if (mounted) {
                                 Navigator.push(
                                   context,
@@ -806,7 +757,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         String parsedName = _getFilenameFromContentDisposition(downloadRequest.contentDisposition!);
                         if (parsedName.isNotEmpty) finalFileName = parsedName;
                       }
-                        
                       await _handleDownload(downloadRequest.url.toString(), finalFileName);
                     },
                   ),
