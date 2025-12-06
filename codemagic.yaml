@@ -1,0 +1,36 @@
+workflows:
+  ios-unsigned-build:
+    name: iOS Build (Unsigned for 3uTools)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Get Flutter packages
+        script: |
+          flutter packages pub get
+      
+      - name: Install CocoaPods
+        script: |
+          find . -name "Podfile" -execdir pod install \;
+
+      - name: Build iOS Release (No Code Signing)
+        script: |
+          # Build the .app bundle without signing
+          flutter build ios --release --no-codesign
+
+      - name: Create IPA from .app
+        script: |
+          # Go to the build output directory
+          cd build/ios/iphoneos
+          
+          # Create the Payload folder structure required for an IPA
+          mkdir Payload
+          mv Runner.app Payload/
+          
+          # Zip the Payload folder into an .ipa file
+          zip -r epos_app_unsigned.ipa Payload
+    artifacts:
+      - build/ios/iphoneos/*.ipa

@@ -1,0 +1,58 @@
+name: epos
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+4
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Core
+  path_provider: ^2.1.5
+  external_path: ^2.2.0
+  permission_handler: ^12.0.1
+  connectivity_plus: ^7.0.0
+  device_info_plus: ^10.1.0
+
+  # Networking
+  dio: ^5.5.0
+  http: ^1.6.0
+  url_launcher: ^6.3.2
+
+  # UI & Scanner
+  cupertino_icons: ^1.0.8
+  mobile_scanner: ^7.1.3
+  flutter_inappwebview: ^6.0.0
+  flutter_local_notifications: ^19.5.0
+
+  # PDF & Sharing
+  flutter_pdfview: ^1.4.3
+  printing: ^5.14.2
+  share_plus: ^12.0.1
+  pdf: ^3.11.3
+  flutter_launcher_icons: ^0.14.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/icon.png"
+  min_sdk_android: 21 # Required for modern Android features
+  
+  # PRO TIP: Adaptive Icons for Huawei/Android 8+
+  # This creates the "round" icon that Huawei devices prefer.
+  # If your icon is a solid square, you can remove these two 'adaptive' lines.
+  # If your icon is a logo with a transparent background, keep these!
+  adaptive_icon_background: "#FFFFFF" # Hex color for the background circle
+  adaptive_icon_foreground: "assets/icon.png" # Your logo (transparent background)
