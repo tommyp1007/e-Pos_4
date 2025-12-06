@@ -70,6 +70,7 @@
     <array>
         <string>fetch</string>
         <string>processing</string>
+        <string>remote-notification</string>
     </array>
 
     <key>BGTaskSchedulerPermittedIdentifiers</key>
@@ -90,13 +91,14 @@
 
     <key>NSCameraUsageDescription</key>
     <string>This app needs camera access to scan QR codes and for capturing images.</string>
-
     <key>NSMicrophoneUsageDescription</key>
     <string>This app needs microphone access for voice input and audio features within the app.</string>
 
+    <key>NSSiriUsageDescription</key>
+    <string>This app allows you to use Siri to perform quick actions and search within the app.</string>
+
     <key>NSPhotoLibraryUsageDescription</key>
     <string>This app needs photo library access to allow you to select and upload images.</string>
-
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>This app needs photo library access to save receipts or images.</string>
 
@@ -107,6 +109,9 @@
 
     <key>NSDocumentsFolderUsageDescription</key>
     <string>This app needs access to store generated PDF reports.</string>
+
+    <key>NSUserTrackingUsageDescription</key>
+    <string>This identifier will be used to deliver personalized ads and analytics to you.</string>
 
 </dict>
 </plist>

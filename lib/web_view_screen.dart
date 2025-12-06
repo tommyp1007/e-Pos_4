@@ -109,8 +109,13 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   // ===========================================================================
 
   Future<void> _initPermissionsAndNotifications() async {
+    // 1. Initialize Notification Settings
     await _initNotifications();
+
+    // 2. Request Camera
     await Permission.camera.request();
+
+    // 3. Platform Specific Permissions
     if (Platform.isAndroid) {
       if (await Permission.storage.request().isGranted) {
         // Storage granted
@@ -118,12 +123,31 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         await Permission.manageExternalStorage.request();
       }
       await Permission.notification.request();
+    } else if (Platform.isIOS) {
+      // --- IOS FIX: Request Notifications Explicitly ---
+      final IOSFlutterLocalNotificationsPlugin? iosPlatform =
+          flutterLocalNotificationsPlugin
+              .resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>();
+      
+      await iosPlatform?.requestPermissions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      // --- IOS FIX: Request Tracking Transparency (ATT) ---
+      // This triggers the "Allow Tracking" popup if NSUserTrackingUsageDescription is in Info.plist
+      if (await Permission.appTrackingTransparency.status == PermissionStatus.denied) {
+        await Permission.appTrackingTransparency.request();
+      }
     }
   }
 
   Future<void> _initNotifications() async {
+    // --- ICON FIX: Use 'ic_notification' instead of 'launcher_icon' ---
+    // Ensure you have android/app/src/main/res/drawable/ic_notification.png (transparent white logo)
     const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('launcher_icon');
+        AndroidInitializationSettings('ic_notification');
     
     final DarwinInitializationSettings initializationSettingsDarwin =
         DarwinInitializationSettings(
@@ -151,7 +175,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       channelDescription: 'Downloaded files',
       importance: Importance.high,
       priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
+      // Ensure this matches your drawable resource
+      icon: 'ic_notification', 
+      color: Colors.blue, // Sets the icon color for the transparent image
     );
 
     try {
@@ -710,6 +736,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                                   const SnackBar(content: Text('Opening Printer Settings...')),
                                 );
                               }
+
+                              // --- IOS PRINT FIX: WAIT FOR UI TO SETTLE ---
+                              // The print preview often disappears immediately on iOS if called 
+                              // instantly after a JS click event. A small delay stabilizes the view.
+                              await Future.delayed(const Duration(milliseconds: 500));
                               
                               String jobName = "Receipt";
                               if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
@@ -728,6 +759,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                                   );
                                 },
                                 name: jobName,
+                                // --- IOS PRINT FIX: USE PRINTER SETTINGS ---
+                                // This provides a more robust native UI integration on iOS
+                                usePrinterSettings: true,
                               );
 
                             } catch (e) {
@@ -759,7 +793,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         String parsedName = _getFilenameFromContentDisposition(downloadRequest.contentDisposition!);
                         if (parsedName.isNotEmpty) finalFileName = parsedName;
                       }
-                       
+                        
                       await _handleDownload(downloadRequest.url.toString(), finalFileName);
                     },
                   ),
