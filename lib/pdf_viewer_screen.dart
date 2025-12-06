@@ -27,6 +27,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   String _errorMessage = '';
 
   /// Handles the Share functionality securely
+  /// Works on Android, iOS, and Tablets (iPad requires origin rect)
   Future<void> _shareFile(BuildContext buttonContext) async {
     if (_isExporting) return;
     setState(() => _isExporting = true);
@@ -68,7 +69,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     }
   }
 
-  /// Handles the Print functionality
+  /// Handles the Print functionality (System Printer / Thermal Printer)
   Future<void> _printFile() async {
     if (_isExporting) return;
     setState(() => _isExporting = true);
@@ -135,7 +136,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
           ],
         ),
         actions: [
-          // Save / Share Button
+          // Save / Share Button (With Builder for iPad context)
           Builder(
             builder: (ctx) {
               return IconButton(

@@ -497,7 +497,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         }
         setInterval(hijackButtons, 1000);
 
-        // 4. RECEIPT PRINTING HIJACKER
+        // 4. RECEIPT PRINTING HIJACKER (UPDATED FOR CUSTOM XML STYLE)
         document.body.addEventListener('click', function(e) {
            var btn = e.target.closest('.button.print') || 
                      e.target.closest('.print-button') ||
@@ -512,7 +512,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
                  var clone = receipt.cloneNode(true);
 
-                 // A. FIX IMAGE PATHS
+                 // A. FIX IMAGE PATHS (Make absolute so Flutter PDF can render them)
                  var images = clone.querySelectorAll('img');
                  var origin = window.location.origin; 
                  images.forEach(function(img) {
@@ -532,8 +532,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                      if(match && match[1]) extractedRef = match[1].trim();
                  } catch(err) {}
 
-                 // C. EXACT CSS (From your XML Request)
-                 // This style block ensures the generated PDF looks exactly like the Odoo XML design
+                 // C. EXACT CSS (FROM YOUR XML REQUEST)
+                 // This mirrors the styling found in the Odoo QWeb XML provided.
                  var style = `
                     <style>
                         @import url('https://fonts.googleapis.com/css?family=Inconsolata:400,700&display=swap');
@@ -544,7 +544,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                             color: black; 
                             margin: 0;
                             padding: 10px;
-                            font-size: 13px; /* Base size */
+                            font-size: 13px; /* Base size found in XML */
                         }
                         
                         img { max-width: 100%; }
@@ -595,7 +595,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
                  var fullHtml = '<html><head><meta charset="utf-8">' + style + '</head><body>' + content + '</body></html>';
                  
-                 // Pass html to Flutter
+                 // Pass html to Flutter to generate PDF
                  window.flutter_inappwebview.callHandler('PrintPosReceipt', fullHtml, extractedRef);
                  return false; 
               }
@@ -722,7 +722,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         },
                       );
 
-                      // --- 4. PRINT HANDLER (GENERATE & OPEN IN VIEWER) ---
+                      // --- 4. PRINT HANDLER (GENERATE PDF & NAVIGATE) ---
                       controller.addJavaScriptHandler(
                         handlerName: 'PrintPosReceipt',
                         callback: (args) async {
@@ -755,7 +755,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                               fileName += ".pdf";
 
                               // B. GENERATE PDF BYTES
-                              // using 80mm roll width typically found in POS
+                              // Standard POS roll width is 80mm.
+                              // We use the `printing` package to render the HTML from Odoo into a PDF.
                               final Uint8List pdfBytes = await Printing.convertHtml(
                                 html: receiptHtml,
                                 format: PdfPageFormat.roll80, 
