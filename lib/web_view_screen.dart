@@ -113,30 +113,17 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     await Permission.camera.request();
     if (Platform.isAndroid) {
       if (await Permission.storage.request().isGranted) {
+        // Storage granted
       } else if (await Permission.manageExternalStorage.status.isDenied) {
         await Permission.manageExternalStorage.request();
       }
       await Permission.notification.request();
-    } else if (Platform.isIOS) {
-      final IOSFlutterLocalNotificationsPlugin? iosPlatform =
-          flutterLocalNotificationsPlugin
-              .resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>();
-      
-      await iosPlatform?.requestPermissions(
-        alert: true,
-        badge: true,
-        sound: true,
-      );
-
-      if (await Permission.appTrackingTransparency.status == PermissionStatus.denied) {
-        await Permission.appTrackingTransparency.request();
-      }
     }
   }
 
   Future<void> _initNotifications() async {
     const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('ic_notification');
+        AndroidInitializationSettings('launcher_icon');
     
     final DarwinInitializationSettings initializationSettingsDarwin =
         DarwinInitializationSettings(
@@ -164,8 +151,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       channelDescription: 'Downloaded files',
       importance: Importance.high,
       priority: Priority.high,
-      icon: 'ic_notification', 
-      color: Colors.blue, 
+      icon: '@mipmap/ic_launcher',
     );
 
     try {
@@ -202,13 +188,15 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   // ===========================================================================
-  // FILE HANDLING
+  // FILE HANDLING (SAVE & OPEN)
   // ===========================================================================
 
   Future<void> _openFile(String filePath) async {
     if (filePath.startsWith('file://')) {
       filePath = filePath.substring(7);
     }
+
+    // Open PDF Viewer if it's a PDF
     if (filePath.toLowerCase().endsWith('.pdf')) {
       if (mounted) {
         Navigator.push(
@@ -219,6 +207,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         );
       }
     } else {
+      // Fallback share for other files
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: const Text("File saved"),
@@ -234,6 +223,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   Future<void> _saveDataToFile(List<int> bytes, String mimeType, String? suggestedFileName) async {
     try {
       String fileName = suggestedFileName ?? "";
+
+      // --- 1. CUSTOM NAMING LOGIC ---
       if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
           String sanitizedRef = _currentOrderRef!.replaceAll('/', '_').replaceAll(' ', '_').trim();
           String sanitizedUuid = (_currentUuid != null && _currentUuid!.isNotEmpty && _currentUuid != 'null') 
@@ -241,18 +232,20 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               : "e-Invoice"; 
           
           fileName = "MyInvois e-POS_${sanitizedRef}_${sanitizedUuid}.pdf";
+          log("Using Custom Filename: $fileName");
       }
       else if (fileName.isEmpty || fileName.toLowerCase().contains("unknown")) {
         String extension = 'pdf';
         if (mimeType.contains('image')) extension = 'png';
         fileName = "Odoo_Doc_${DateTime.now().millisecondsSinceEpoch}.$extension";
       }
-       
+        
       fileName = fileName.replaceAll('/', '_').replaceAll('\\', '_');
       if (mimeType == 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')) {
         fileName += '.pdf';
       }
 
+      // --- 2. SAVE TO DISK ---
       String filePath = "";
       
       if (Platform.isAndroid) {
@@ -267,6 +260,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         
         await file.writeAsBytes(bytes, flush: true);
         filePath = file.path;
+        
         await _showNotification(fileName, filePath);
         
         if (mounted) {
@@ -336,23 +330,34 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
   Future<void> _handleDownload(String url, String? suggestedFileName) async {
     Uri uri = Uri.parse(url);
+
     if (uri.scheme == 'blob') {
       await _processBlobUrl(url, suggestedFileName);
       return;
     }
+
     if (uri.scheme == 'data') {
       await _saveBase64ToFile(url, 'application/pdf', suggestedFileName);
       return;
     }
+
     try {
       if (Platform.isIOS) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Preparing Document...')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Preparing Document...')),
+          );
         }
+        
         CookieManager cookieManager = CookieManager.instance();
         List<Cookie> cookies = await cookieManager.getCookies(url: WebUri(url));
         String cookieHeader = cookies.map((c) => "${c.name}=${c.value}").join("; ");
-        final response = await http.get(uri, headers: {'Cookie': cookieHeader, 'User-Agent': 'FlutterApp'});
+
+        final response = await http.get(
+          uri,
+          headers: {'Cookie': cookieHeader, 'User-Agent': 'FlutterApp'},
+        );
+
         if (response.statusCode == 200) {
           await _saveDataToFile(response.bodyBytes, 'application/pdf', suggestedFileName);
         }
@@ -384,7 +389,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       (function() {
         console.log("Injecting Odoo Mobile Hooks...");
 
-        // 1. SCRAPER FOR ORDER REF
+        // 1. SCRAPER FOR ORDER REF AND UUID
         function scrapeTransactionDetails() {
             try {
                 var getValue = function(el) {
@@ -393,12 +398,17 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     if (el.tagName === 'SPAN' || el.tagName === 'DIV' || el.tagName === 'B') return el.innerText;
                     return null;
                 };
+
+                // Strategy A: Input Fields (Backend Forms)
                 var orderRef = getValue(document.querySelector('[name="name"]'));
                 var uuid = getValue(document.querySelector('[name="uuid"]'));
+
+                // Strategy B: Breadcrumbs / Title (If inputs missing)
                 if (!orderRef) {
                    var breadcrumb = document.querySelector('.o_breadcrumb .active');
                    if (breadcrumb) orderRef = breadcrumb.innerText;
                 }
+
                 if (orderRef) {
                     window.flutter_inappwebview.callHandler('TransactionInfoHandler', orderRef, uuid);
                 }
@@ -406,9 +416,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         }
         setInterval(scrapeTransactionDetails, 1500);
 
-        // 2. BARCODE SCANNER
+        // 2. BARCODE SCANNER HANDLER
         window.onFlutterBarcodeScanned = function(code) {
            console.log("Received barcode: " + code);
+           
+           // A. PARTNER SEARCH
            var partnerSearchInput = document.querySelector('input[placeholder="Search Customers..."]') || document.querySelector('.sb-partner input');
            if (partnerSearchInput && partnerSearchInput.offsetParent !== null) {
               partnerSearchInput.setAttribute('inputmode', 'none'); 
@@ -421,6 +433,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               setTimeout(() => { partnerSearchInput.removeAttribute('inputmode'); }, 200);
               return;
            }
+
+           // B. PRODUCT SEARCH
            var productSearchInput = document.querySelector('input[placeholder="Search products..."]') || document.querySelector('input[placeholder="Carian produk..."]') || document.querySelector('.products-widget-control input');
            if (productSearchInput && productSearchInput.offsetParent !== null) {
               productSearchInput.setAttribute('inputmode', 'none');
@@ -431,6 +445,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               productSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
               productSearchInput.blur();
               setTimeout(() => { productSearchInput.removeAttribute('inputmode'); }, 200);
+              
               setTimeout(function() {
                  var plusIcon = document.querySelector('#qty_btn_product .fa-plus');
                  if (plusIcon && plusIcon.closest('a')) {
@@ -442,6 +457,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               }, 700);
               return;
            }
+
+           // C. FALLBACK
            window.dispatchEvent(new CustomEvent('barcode_scanned', { detail: code }));
            var target = document.activeElement || document.body;
            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
@@ -459,7 +476,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
            }
         };
 
-        // 3. NATIVE SCANNER BUTTON HIJACK
+        // 3. BUTTON HIJACKING (For Native Scanner)
         function hijackButtons() {
            var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode', 'button[name="action_open_label_layout"]'];
            selectors.forEach(function(sel) {
@@ -480,14 +497,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         }
         setInterval(hijackButtons, 1000);
 
-        // 4. POS RECEIPT PRINTING HIJACKER (COMPLETELY REWRITTEN FOR ODOO 17 XML SUPPORT)
+        // 4. RECEIPT PRINTING HIJACKER
         document.body.addEventListener('click', function(e) {
-           // Find the print button (Handles .print, .btn-secondary, etc.)
            var btn = e.target.closest('.button.print') || 
                      e.target.closest('.print-button') ||
-                     e.target.closest('.btn-secondary');
+                     e.target.closest('.btn-secondary'); 
 
-           // If it is a print button, and we can find a receipt
            if (btn) {
               var receipt = document.querySelector('.pos-receipt');
               
@@ -495,21 +510,21 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                  e.preventDefault(); 
                  e.stopImmediatePropagation();
 
-                 // CLONE: Clone the receipt to manipulate it without affecting the UI
                  var clone = receipt.cloneNode(true);
 
-                 // A. FIX IMAGES (Relative -> Absolute)
+                 // A. FIX IMAGE PATHS
                  var images = clone.querySelectorAll('img');
-                 var origin = window.location.origin; // e.g., https://your-odoo.com
+                 var origin = window.location.origin; 
                  images.forEach(function(img) {
                     var src = img.getAttribute('src');
-                    // If src is relative (starts with /), prepend origin
                     if (src && src.startsWith('/')) {
                         img.src = origin + src; 
                     }
                  });
 
-                 // B. EXTRACT REF (For Filename)
+                 var content = clone.outerHTML;
+                 
+                 // B. EXTRACT REF
                  var extractedRef = null;
                  try {
                      var text = receipt.innerText || "";
@@ -517,47 +532,64 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                      if(match && match[1]) extractedRef = match[1].trim();
                  } catch(err) {}
 
-                 // C. EXTRACT HTML
-                 var content = clone.outerHTML;
-
-                 // D. DEFINE CSS (Bootstrap-like styles to match Odoo 17 XML classes)
-                 // This is CRITICAL because the raw HTML doesn't include the stylesheet
+                 // C. EXACT CSS (From your XML Request)
+                 // This style block ensures the generated PDF looks exactly like the Odoo XML design
                  var style = `
                     <style>
                         @import url('https://fonts.googleapis.com/css?family=Inconsolata:400,700&display=swap');
+                        
                         body { 
                             font-family: 'Inconsolata', monospace; 
                             background: white; 
                             color: black; 
                             margin: 0;
                             padding: 10px;
+                            font-size: 13px; /* Base size */
                         }
                         
-                        /* Helpers */
+                        img { max-width: 100%; }
+                        
+                        /* Layout Utilities */
                         .text-center { text-align: center; }
                         .text-right { text-align: right; }
                         .fw-bold { font-weight: bold; }
-                        .fs-6 { font-size: 14px; }
+                        .fs-6 { font-size: 14px; font-weight: bold; }
                         
-                        /* Bootstrap/Odoo Card replacements */
-                        .card { 
-                            border: none; 
-                            margin-bottom: 10px;
-                        } 
-                        .card-body { 
-                            padding: 0; 
-                        }
+                        /* Card Wrappers */
+                        .card { border: none; width: 100%; } 
+                        .card-body { padding: 0; }
                         
                         /* Tables */
-                        table { width: 100%; border-collapse: collapse; }
-                        td, th { vertical-align: top; padding: 2px 0; }
+                        table { 
+                            width: 100%; 
+                            border-collapse: collapse; 
+                        }
+                        td, th { 
+                            vertical-align: top; 
+                            padding: 2px 0; 
+                        }
                         
-                        /* Images */
-                        img { max-width: 100%; }
+                        /* Specific Receipt Styling from XML */
+                        .receipt-orderlines {
+                            border-style: double;
+                            border-left: none;
+                            border-right: none;
+                            border-bottom: none;
+                            width: 100%;
+                            margin-top: 5px;
+                        }
                         
-                        /* Lists */
-                        ul { padding-left: 15px; margin: 5px 0; }
-                        li { font-size: 10px; }
+                        .pos-receipt-title {
+                            font-weight: bold;
+                            font-size: 140%;
+                            text-align: center;
+                        }
+
+                        ul { list-style-type: none; padding: 0; margin: 0; }
+                        
+                        /* Dashed Lines for Totals */
+                        tr[style*="border-top: 1px dashed"] { border-top: 1px dashed black !important; }
+                        tr[style*="border-bottom:1px dashed"] { border-bottom: 1px dashed black !important; }
                     </style>
                  `;
 
@@ -637,13 +669,14 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     onWebViewCreated: (controller) {
                       _webViewController = controller;
 
-                      // --- HANDLERS ---
+                      // --- 1. TRANSACTION INFO HANDLER ---
                       controller.addJavaScriptHandler(
                           handlerName: 'TransactionInfoHandler', 
                           callback: (args) {
                               if (args.length >= 2) {
                                   String? newRef = args[0]?.toString();
                                   String? newUuid = args[1]?.toString();
+                                  
                                   if (newRef != null && newRef != "null") {
                                       setState(() {
                                           _currentOrderRef = newRef;
@@ -656,13 +689,17 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                           }
                       );
 
+                      // --- 2. QR HANDLER ---
                       controller.addJavaScriptHandler(
                         handlerName: 'NativeQRScanner',
                         callback: (args) async {
                           final String? qrData = await Navigator.push<String>(
                             context,
-                            MaterialPageRoute(builder: (context) => const QRScannerScreen()),
+                            MaterialPageRoute(
+                              builder: (context) => const QRScannerScreen(),
+                            ),
                           );
+
                           if (qrData != null && qrData.isNotEmpty) {
                             String filteredData = _extractDataFromQr(qrData);
                             final String escapedQrData = filteredData.replaceAll("'", "\\'");
@@ -672,6 +709,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         },
                       );
 
+                      // --- 3. BLOB HANDLER ---
                       controller.addJavaScriptHandler(
                         handlerName: 'BlobDownloader',
                         callback: (args) async {
@@ -684,53 +722,66 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         },
                       );
 
-                      // --- PRINT HANDLER ---
+                      // --- 4. PRINT HANDLER (GENERATE & OPEN IN VIEWER) ---
                       controller.addJavaScriptHandler(
                         handlerName: 'PrintPosReceipt',
                         callback: (args) async {
                           if (args.isNotEmpty) {
                             String receiptHtml = args[0].toString();
+                            
+                            // Check if JS passed the Scraped Ref
                             if (args.length > 1 && args[1] != null && args[1].toString() != "null") {
                                 String extractedRef = args[1].toString();
                                 setState(() {
                                     _currentOrderRef = extractedRef;
+                                    log("Ref updated from Print Click: $_currentOrderRef");
                                 });
                             }
+
                             try {
                               if (mounted) {
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('Opening Printer Settings...')),
+                                  const SnackBar(content: Text('Generating Receipt Preview...'), duration: Duration(seconds: 1)),
+                                );
+                              }
+                              
+                              // A. DEFINE FILENAME
+                              String fileName = "Receipt";
+                              if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
+                                fileName += "_${_currentOrderRef!.replaceAll('/', '_')}";
+                              } else {
+                                fileName += "_${DateTime.now().millisecondsSinceEpoch}";
+                              }
+                              fileName += ".pdf";
+
+                              // B. GENERATE PDF BYTES
+                              // using 80mm roll width typically found in POS
+                              final Uint8List pdfBytes = await Printing.convertHtml(
+                                html: receiptHtml,
+                                format: PdfPageFormat.roll80, 
+                              );
+
+                              // C. SAVE TO TEMP FILE
+                              final tempDir = await getTemporaryDirectory();
+                              final tempFile = File('${tempDir.path}/$fileName');
+                              await tempFile.writeAsBytes(pdfBytes, flush: true);
+
+                              // D. OPEN VIEWER SCREEN
+                              if (mounted) {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => PdfViewerScreen(filePath: tempFile.path),
+                                  ),
                                 );
                               }
 
-                              // --- IOS FIX: DELAY FOR UI STABILITY ---
-                              // Allows the webview click event to settle before native UI takes over
-                              await Future.delayed(const Duration(milliseconds: 500));
-                              
-                              String jobName = "Receipt";
-                              if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
-                                jobName += "_$_currentOrderRef";
-                              } else {
-                                jobName += "_${DateTime.now().millisecondsSinceEpoch}";
-                              }
-
-                              // --- PRINT THE HTML ---
-                              await Printing.layoutPdf(
-                                onLayout: (PdfPageFormat format) async {
-                                  return await Printing.convertHtml(
-                                    format: format,
-                                    html: receiptHtml,
-                                    // BaseUrl helps resolve any remaining relative paths if the JS fixer missed them
-                                    baseUrl: widget.url, 
-                                  );
-                                },
-                                name: jobName,
-                                usePrinterSettings: true,
-                              );
                             } catch (e) {
                               log("Error processing receipt: $e");
                               if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Print Error: $e")));
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text("Receipt Gen Error: $e"))
+                                );
                               }
                             }
                           }
@@ -754,6 +805,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         String parsedName = _getFilenameFromContentDisposition(downloadRequest.contentDisposition!);
                         if (parsedName.isNotEmpty) finalFileName = parsedName;
                       }
+                        
                       await _handleDownload(downloadRequest.url.toString(), finalFileName);
                     },
                   ),

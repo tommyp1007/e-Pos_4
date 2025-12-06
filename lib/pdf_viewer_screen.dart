@@ -1,5 +1,3 @@
-// File: lib/screens/pdf_viewer_screen.dart
-
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui'; // Required for ImageFilter
@@ -116,8 +114,6 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
         elevation: 0,
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
-        // Since this might be opened from "Open With", a Close icon is sometimes 
-        // clearer than a Back arrow, but standard Back is also fine.
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new_rounded),
           onPressed: () => Navigator.of(context).pop(),
@@ -139,19 +135,20 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
           ],
         ),
         actions: [
-          // Share Button with Builder for Context (Critical for iPad)
+          // Save / Share Button
           Builder(
             builder: (ctx) {
               return IconButton(
-                icon: const Icon(Icons.ios_share_rounded),
-                tooltip: 'Share',
+                icon: const Icon(Icons.share_rounded),
+                tooltip: 'Share / Save PDF',
                 onPressed: () => _shareFile(ctx),
               );
             }
           ),
+          // Print Button
           IconButton(
             icon: const Icon(Icons.print_rounded),
-            tooltip: 'Print',
+            tooltip: 'Print Receipt',
             onPressed: _printFile,
           ),
         ],
@@ -163,7 +160,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
             PDFView(
               filePath: widget.filePath,
               enableSwipe: true,
-              swipeHorizontal: false, // Vertical scrolling is better for documents
+              swipeHorizontal: false, // Vertical scrolling is better for receipts
               autoSpacing: false,
               pageFling: false,
               pageSnap: false,
@@ -263,7 +260,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                             ),
                             
                             const SizedBox(width: 10),
-                             Text(
+                            Text(
                               "$_totalPages",
                               style: const TextStyle(color: Colors.white70),
                             ),
@@ -289,7 +286,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                           CircularProgressIndicator(color: Colors.white),
                           SizedBox(height: 20),
                           Text(
-                            "Preparing File...",
+                            "Processing...",
                             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
                           )
                         ],
