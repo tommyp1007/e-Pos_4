@@ -399,32 +399,25 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     }
   }
 
-  // --- UPDATED FILENAME FUNCTION ---
   Future<void> _saveDataToFile(List<int> bytes, String mimeType, String? suggestedFileName) async {
     try {
-      String fileName = suggestedFileName ?? "";
+      // --- NEW NAMING LOGIC START ---
+      // 1. Generate a valid timestamp string (e.g. 2023-10-25_14-30-05)
+      // We remove the milliseconds, replace space with underscore, and colons with dashes.
+      String timestamp = DateTime.now()
+          .toString()
+          .split('.')[0] // Remove milliseconds
+          .replaceAll(':', '-') // Replace invalid filename char ':' with '-'
+          .replaceAll(' ', '_'); // Replace space with '_'
 
-      // LOGIC: MyInvois e-POS_{name}_{uuid}
-      if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
-        
-        String cleanRef = _currentOrderRef!.trim().replaceAll('/', '_').replaceAll('\\', '_');
-        
-        // Handle UUID (might be null if just scraping Name)
-        String cleanUuid = (_currentUuid != null && _currentUuid != "null" && _currentUuid!.isNotEmpty) 
-            ? _currentUuid!.trim() 
-            : "e-Invoice";
+      // 2. Set the file name
+      String fileName = "MyInvois e-POS_$timestamp.pdf";
+      // --- NEW NAMING LOGIC END ---
 
-        fileName = "MyInvois e-POS_${cleanRef}_${cleanUuid}.pdf";
-      
-      } else if (fileName.isEmpty || fileName.toLowerCase().contains("unknown") || fileName.toLowerCase().contains("document")) {
-        // Fallback
-        String extension = 'pdf';
-        if (mimeType.contains('image')) extension = 'png';
-        fileName = "Odoo_Doc_${DateTime.now().millisecondsSinceEpoch}.$extension";
-      }
-
-      // Cleanup filename
+      // Ensure valid file path characters just in case
       fileName = fileName.replaceAll('/', '_').replaceAll('\\', '_');
+      
+      // Double check extension
       if (mimeType == 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')) {
         fileName += '.pdf';
       }
@@ -435,10 +428,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         String path = await ExternalPath.getExternalStoragePublicDirectory(ExternalPath.DIRECTORY_DOWNLOAD);
         File file = File('$path/$fileName');
 
+        // Check if file exists (unlikely with seconds timestamp, but good practice)
         if (await file.exists()) {
-          String nameWithoutExt = fileName.substring(0, fileName.lastIndexOf('.'));
-          String ext = fileName.substring(fileName.lastIndexOf('.'));
-          file = File('$path/${nameWithoutExt}_${DateTime.now().millisecondsSinceEpoch}$ext');
+          String nameWithoutExt = fileName.split('.').first;
+          String ext = fileName.split('.').last;
+          file = File('$path/${nameWithoutExt}_${DateTime.now().millisecondsSinceEpoch}.$ext');
         }
 
         await file.writeAsBytes(bytes, flush: true);
@@ -737,6 +731,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         setInterval(attachEInvoiceListener, 1000);
 
       })();
+
+      
+
+[Image of DOM tree structure]
+
 
            // Locate the specific button class
            var btn = e.target.closest('.button.print');
