@@ -399,23 +399,31 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     }
   }
 
+  // --- UPDATED FILENAME FUNCTION ---
   Future<void> _saveDataToFile(List<int> bytes, String mimeType, String? suggestedFileName) async {
     try {
       String fileName = suggestedFileName ?? "";
 
+      // LOGIC: MyInvois e-POS_{name}_{uuid}
       if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
-        String sanitizedRef = _currentOrderRef!.replaceAll('/', '_').replaceAll(' ', '_').trim();
-        String sanitizedUuid = (_currentUuid != null && _currentUuid!.isNotEmpty && _currentUuid != 'null')
-            ? _currentUuid!.replaceAll('/', '_').trim()
+        
+        String cleanRef = _currentOrderRef!.trim().replaceAll('/', '_').replaceAll('\\', '_');
+        
+        // Handle UUID (might be null if just scraping Name)
+        String cleanUuid = (_currentUuid != null && _currentUuid != "null" && _currentUuid!.isNotEmpty) 
+            ? _currentUuid!.trim() 
             : "e-Invoice";
 
-        fileName = "MyInvois e-POS_${sanitizedRef}_${sanitizedUuid}.pdf";
-      } else if (fileName.isEmpty || fileName.toLowerCase().contains("unknown")) {
+        fileName = "MyInvois e-POS_${cleanRef}_${cleanUuid}.pdf";
+      
+      } else if (fileName.isEmpty || fileName.toLowerCase().contains("unknown") || fileName.toLowerCase().contains("document")) {
+        // Fallback
         String extension = 'pdf';
         if (mimeType.contains('image')) extension = 'png';
         fileName = "Odoo_Doc_${DateTime.now().millisecondsSinceEpoch}.$extension";
       }
 
+      // Cleanup filename
       fileName = fileName.replaceAll('/', '_').replaceAll('\\', '_');
       if (mimeType == 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')) {
         fileName += '.pdf';
@@ -428,9 +436,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         File file = File('$path/$fileName');
 
         if (await file.exists()) {
-          String nameWithoutExt = fileName.split('.').first;
-          String ext = fileName.split('.').last;
-          file = File('$path/${nameWithoutExt}_${DateTime.now().millisecondsSinceEpoch}.$ext');
+          String nameWithoutExt = fileName.substring(0, fileName.lastIndexOf('.'));
+          String ext = fileName.substring(fileName.lastIndexOf('.'));
+          file = File('$path/${nameWithoutExt}_${DateTime.now().millisecondsSinceEpoch}$ext');
         }
 
         await file.writeAsBytes(bytes, flush: true);
@@ -729,11 +737,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         setInterval(attachEInvoiceListener, 1000);
 
       })();
-
-      
-
-[Image of DOM tree structure]
-
 
            // Locate the specific button class
            var btn = e.target.closest('.button.print');
