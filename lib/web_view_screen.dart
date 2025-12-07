@@ -11,17 +11,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'package:pdf/pdf.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:printing/printing.dart';
-import 'package:pdf/pdf.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:http/http.dart' as http;
 
 // --- LOCAL SCREENS ---
-import 'qr_scanner_screen.dart';
 import 'pdf_viewer_screen.dart';
+import 'qr_scanner_screen.dart';
 
 class WebViewScreen extends StatefulWidget {
   final String url;
@@ -32,20 +32,25 @@ class WebViewScreen extends StatefulWidget {
 }
 
 class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserver {
-  // --- CONTROLLERS ---
+  
+  // ===========================================================================
+  // MARK: - STATE VARIABLES & CONTROLLERS
+  // ===========================================================================
+  
+  // Controllers
   InAppWebViewController? _webViewController;
   late PullToRefreshController _pullToRefreshController;
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 
-  // --- STATE VARIABLES ---
+  // State
   bool _isLoading = true;
   bool _isTablet = false;
-   
+
   // Odoo Scraped Data
   String? _currentOrderRef;
   String? _currentUuid;
 
-  // --- SCRIPTS ---
+  // Scripts
   final UserScript _apiDisablerScript = UserScript(
     source: """
       window.BarcodeDetector = class BarcodeDetector {
@@ -58,7 +63,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   );
 
   // ===========================================================================
-  // LIFECYCLE
+  // MARK: - LIFECYCLE METHODS
   // ===========================================================================
 
   @override
@@ -104,88 +109,361 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   // ===========================================================================
-  // PERMISSIONS & NOTIFICATIONS
+  // MARK: - UI BUILD
   // ===========================================================================
 
-  Future<void> _initPermissionsAndNotifications() async {
-    await _initNotifications();
-    await Permission.camera.request();
-    if (Platform.isAndroid) {
-      if (await Permission.storage.request().isGranted) {
-      } else if (await Permission.manageExternalStorage.status.isDenied) {
-        await Permission.manageExternalStorage.request();
-      }
-      await Permission.notification.request();
-    }
+  @override
+  Widget build(BuildContext context) {
+    final String userAgent = _isTablet
+        ? "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+        : "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36";
+
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.white,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.white,
+      ),
+      child: PopScope(
+        canPop: false,
+        onPopInvoked: (didPop) async {
+          if (didPop) return;
+          if (_webViewController != null && await _webViewController!.canGoBack()) {
+            _webViewController!.goBack();
+          } else {
+            if (context.mounted) Navigator.of(context).pop();
+          }
+        },
+        child: Scaffold(
+          resizeToAvoidBottomInset: !Platform.isIOS,
+          backgroundColor: Colors.white,
+          body: SafeArea(
+            child: Column(
+              children: [
+                if (_isLoading)
+                  const LinearProgressIndicator(minHeight: 3, color: Colors.blue),
+                Expanded(
+                  child: InAppWebView(
+                    initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+                    initialUserScripts: UnmodifiableListView<UserScript>([
+                      _apiDisablerScript,
+                    ]),
+                    initialOptions: InAppWebViewGroupOptions(
+                      crossPlatform: InAppWebViewOptions(
+                        javaScriptEnabled: true,
+                        mediaPlaybackRequiresUserGesture: false,
+                        useOnDownloadStart: true,
+                        userAgent: userAgent,
+                      ),
+                      android: AndroidInAppWebViewOptions(
+                        useHybridComposition: true,
+                        supportMultipleWindows: true,
+                        mixedContentMode: AndroidMixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+                      ),
+                      ios: IOSInAppWebViewOptions(
+                        allowsInlineMediaPlayback: true,
+                        disallowOverScroll: true,
+                        sharedCookiesEnabled: true,
+                      ),
+                    ),
+                    pullToRefreshController: _pullToRefreshController,
+                    onWebViewCreated: (controller) {
+                      _webViewController = controller;
+                      _registerJavaScriptHandlers(controller);
+                    },
+                    onLoadStop: (controller, url) {
+                      _pullToRefreshController.endRefreshing();
+                      _injectCustomJavaScript(controller);
+                      setState(() => _isLoading = false);
+                    },
+                    onPermissionRequest: (controller, request) async {
+                      return PermissionResponse(
+                        resources: request.resources,
+                        action: PermissionResponseAction.GRANT,
+                      );
+                    },
+                    onDownloadStartRequest: (controller, downloadRequest) async {
+                      String finalFileName = downloadRequest.suggestedFilename ?? "";
+                      if (downloadRequest.contentDisposition != null) {
+                        String parsedName = _getFilenameFromContentDisposition(downloadRequest.contentDisposition!);
+                        if (parsedName.isNotEmpty) finalFileName = parsedName;
+                      }
+                      await _handleDownload(downloadRequest.url.toString(), finalFileName);
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
-  Future<void> _initNotifications() async {
-    const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('@mipmap/ic_launcher'); 
-    
-    final DarwinInitializationSettings initializationSettingsDarwin =
-        DarwinInitializationSettings(
-            requestSoundPermission: false,
-            requestBadgePermission: false,
-            requestAlertPermission: false);
+  // ===========================================================================
+  // MARK: - WEBVIEW HANDLERS SETUP
+  // ===========================================================================
 
-    final InitializationSettings initializationSettings = InitializationSettings(
-        android: initializationSettingsAndroid, iOS: initializationSettingsDarwin);
+  void _registerJavaScriptHandlers(InAppWebViewController controller) {
+    // 1. Transaction Info Handler
+    controller.addJavaScriptHandler(
+      handlerName: 'TransactionInfoHandler',
+      callback: (args) {
+        if (args.length >= 2) {
+          String? newRef = args[0]?.toString();
+          String? newUuid = args[1]?.toString();
 
-    await flutterLocalNotificationsPlugin.initialize(initializationSettings,
-        onDidReceiveNotificationResponse: (response) {
-      if (response.payload != null) {
-        _openFile(response.payload!);
-      }
-    });
-  }
-
-  Future<void> _showNotification(String fileName, String filePath) async {
-    if (!Platform.isAndroid) return;
-    
-    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      'download_channel_id',
-      'Downloads',
-      channelDescription: 'Downloaded files',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
+          if (newRef != null && newRef != "null") {
+            setState(() {
+              _currentOrderRef = newRef;
+              if (newUuid != null && newUuid != "null") {
+                _currentUuid = newUuid;
+              }
+            });
+          }
+        }
+      },
     );
 
-    try {
-      await flutterLocalNotificationsPlugin.show(
-        DateTime.now().millisecond,
-        'Download Complete',
-        fileName,
-        const NotificationDetails(android: androidDetails),
-        payload: filePath,
-      );
-    } catch (e) {
-      log("Notification Error: $e");
-    }
-  }
+    // 2. Native QR Scanner Handler
+    controller.addJavaScriptHandler(
+      handlerName: 'NativeQRScanner',
+      callback: (args) async {
+        final String? qrData = await Navigator.push<String>(
+          context,
+          MaterialPageRoute(builder: (context) => const QRScannerScreen()),
+        );
 
-  // ===========================================================================
-  // HELPER: TIN EXTRACTION
-  // ===========================================================================
-  String _extractDataFromQr(String rawData) {
-    if (rawData.contains("TIN") || rawData.contains("Taxpayer Profile")) {
-      try {
-        final RegExp tinRegex = RegExp(r'TIN\s*[:\n\r\s]+\s*([A-Z0-9]+)', caseSensitive: false);
-        final match = tinRegex.firstMatch(rawData);
-        if (match != null && match.group(1) != null) {
-          return match.group(1)!;
+        if (qrData != null && qrData.isNotEmpty) {
+          String filteredData = _extractDataFromQr(qrData);
+          final String escapedQrData = filteredData.replaceAll("'", "\\'");
+          String script = "if(window.onFlutterBarcodeScanned) { window.onFlutterBarcodeScanned('$escapedQrData'); }";
+          _webViewController?.evaluateJavascript(source: script);
         }
-      } catch (e) {
-        log("Error parsing TIN: $e");
-      }
-    }
-    return rawData;
+      },
+    );
+
+    // 3. Blob Downloader Handler
+    controller.addJavaScriptHandler(
+      handlerName: 'BlobDownloader',
+      callback: (args) async {
+        if (args.isNotEmpty) {
+          String dataUrl = args[0].toString();
+          String mimeType = args.length > 1 ? args[1].toString() : 'application/pdf';
+          String? fileName = args.length > 2 ? args[2].toString() : null;
+          await _saveBase64ToFile(dataUrl, mimeType, fileName);
+        }
+      },
+    );
+
+    // 4. POS Receipt Print Handler
+    controller.addJavaScriptHandler(
+      handlerName: 'PrintPosReceipt',
+      callback: (args) async {
+        if (args.isNotEmpty) {
+          String receiptHtml = args[0].toString();
+
+          if (args.length > 1 && args[1] != null && args[1].toString() != "null") {
+            String extractedRef = args[1].toString();
+            setState(() {
+              _currentOrderRef = extractedRef;
+            });
+          }
+
+          try {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Generating Receipt...'), duration: Duration(seconds: 1)),
+              );
+            }
+
+            String fileName = "Receipt";
+            if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
+              fileName += "_${_currentOrderRef!.replaceAll('/', '_')}";
+            } else {
+              fileName += "_${DateTime.now().millisecondsSinceEpoch}";
+            }
+            fileName += ".pdf";
+
+            // Generate PDF (80mm thermal format)
+            final Uint8List pdfBytes = await Printing.convertHtml(
+              html: receiptHtml,
+              format: PdfPageFormat.roll80,
+            );
+
+            // Save to Temp and Open
+            final tempDir = await getTemporaryDirectory();
+            final tempFile = File('${tempDir.path}/$fileName');
+            await tempFile.writeAsBytes(pdfBytes, flush: true);
+
+            if (mounted) {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => PdfViewerScreen(filePath: tempFile.path),
+                ),
+              );
+            }
+          } catch (e) {
+            log("Error processing receipt: $e");
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text("Receipt Gen Error: $e"))
+              );
+            }
+          }
+        }
+      },
+    );
   }
 
   // ===========================================================================
-  // FILE HANDLING
+  // MARK: - FILE HANDLING & DOWNLOADS
   // ===========================================================================
+
+  Future<void> _handleDownload(String url, String? suggestedFileName) async {
+    Uri uri = Uri.parse(url);
+
+    if (uri.scheme == 'blob') {
+      await _processBlobUrl(url, suggestedFileName);
+      return;
+    }
+    if (uri.scheme == 'data') {
+      await _saveBase64ToFile(url, 'application/pdf', suggestedFileName);
+      return;
+    }
+
+    try {
+      if (Platform.isIOS) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Preparing Document...')),
+          );
+        }
+
+        CookieManager cookieManager = CookieManager.instance();
+        List<Cookie> cookies = await cookieManager.getCookies(url: WebUri(url));
+        String cookieHeader = cookies.map((c) => "${c.name}=${c.value}").join("; ");
+
+        final response = await http.get(
+          uri,
+          headers: {'Cookie': cookieHeader, 'User-Agent': 'FlutterApp'},
+        );
+
+        if (response.statusCode == 200) {
+          await _saveDataToFile(response.bodyBytes, 'application/pdf', suggestedFileName);
+        }
+      } else {
+        if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+          await launchUrl(uri, mode: LaunchMode.platformDefault);
+        }
+      }
+    } catch (e) {
+      log("Download error: $e");
+    }
+  }
+
+  Future<void> _processBlobUrl(String blobUrl, String? suggestedFileName) async {
+    String fileNameArg = suggestedFileName ?? '';
+    fileNameArg = fileNameArg.replaceAll("'", "\\'");
+
+    String script = """
+      (async function() {
+        try {
+          var response = await fetch('$blobUrl');
+          var blob = await response.blob();
+          
+          var reader = new FileReader();
+          reader.onloadend = function() {
+            var base64data = reader.result;
+            window.flutter_inappwebview.callHandler('BlobDownloader', base64data, blob.type, '$fileNameArg');
+          }
+          reader.readAsDataURL(blob);
+        } catch (e) {
+          console.error("Error fetching blob: " + e);
+        }
+      })();
+    """;
+    await _webViewController?.evaluateJavascript(source: script);
+  }
+
+  Future<void> _saveBase64ToFile(String dataUrl, String mimeType, String? name) async {
+    try {
+      final split = dataUrl.split(',');
+      if (split.length < 2) return;
+      final bytes = base64Decode(split[1]);
+      await _saveDataToFile(bytes, mimeType, name);
+    } catch (e) {
+      log("Base64 error: $e");
+    }
+  }
+
+  Future<void> _saveDataToFile(List<int> bytes, String mimeType, String? suggestedFileName) async {
+    try {
+      String fileName = suggestedFileName ?? "";
+
+      // --- CUSTOM NAMING LOGIC FOR E-POS ---
+      // Format: MyInvois e-POS_{OrderRef}_{UUID}.pdf
+      if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
+        String cleanRef = _currentOrderRef!.trim().replaceAll('/', '_').replaceAll('\\', '_');
+        String cleanUuid = (_currentUuid != null && _currentUuid != "null" && _currentUuid!.isNotEmpty)
+            ? _currentUuid!.trim()
+            : "No-UUID";
+
+        fileName = "MyInvois e-POS_${cleanRef}_${cleanUuid}.pdf";
+      } else if (fileName.isEmpty || fileName.toLowerCase().contains("unknown") || fileName.toLowerCase().contains("document")) {
+        // Fallback
+        String extension = 'pdf';
+        if (mimeType.contains('image')) extension = 'png';
+        fileName = "Odoo_Doc_${DateTime.now().millisecondsSinceEpoch}.$extension";
+      }
+
+      // Cleanup filename
+      fileName = fileName.replaceAll('/', '_').replaceAll('\\', '_');
+      if (mimeType == 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')) {
+        fileName += '.pdf';
+      }
+
+      String filePath = "";
+
+      if (Platform.isAndroid) {
+        String path = await ExternalPath.getExternalStoragePublicDirectory(ExternalPath.DIRECTORY_DOWNLOAD);
+        File file = File('$path/$fileName');
+
+        if (await file.exists()) {
+          String nameWithoutExt = fileName.substring(0, fileName.lastIndexOf('.'));
+          String ext = fileName.substring(fileName.lastIndexOf('.'));
+          file = File('$path/${nameWithoutExt}_${DateTime.now().millisecondsSinceEpoch}$ext');
+        }
+
+        await file.writeAsBytes(bytes, flush: true);
+        filePath = file.path;
+
+        await _showNotification(fileName, filePath);
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Saved: $fileName'),
+            backgroundColor: Colors.green,
+            action: SnackBarAction(
+              label: 'OPEN',
+              textColor: Colors.white,
+              onPressed: () => _openFile(filePath),
+            ),
+          ));
+        }
+      } else if (Platform.isIOS) {
+        final directory = await getApplicationDocumentsDirectory();
+        final file = File('${directory.path}/$fileName');
+        await file.writeAsBytes(bytes, flush: true);
+        filePath = file.path;
+        _openFile(filePath);
+      }
+    } catch (e) {
+      log("Error saving file: $e");
+    }
+  }
 
   Future<void> _openFile(String filePath) async {
     if (filePath.startsWith('file://')) {
@@ -214,149 +492,85 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     }
   }
 
-  Future<void> _saveDataToFile(List<int> bytes, String mimeType, String? suggestedFileName) async {
-    try {
-      String fileName = suggestedFileName ?? "";
+  // ===========================================================================
+  // MARK: - PERMISSIONS & NOTIFICATIONS
+  // ===========================================================================
 
-      if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
-          String sanitizedRef = _currentOrderRef!.replaceAll('/', '_').replaceAll(' ', '_').trim();
-          String sanitizedUuid = (_currentUuid != null && _currentUuid!.isNotEmpty && _currentUuid != 'null') 
-              ? _currentUuid!.replaceAll('/', '_').trim() 
-              : "e-Invoice"; 
-          
-          fileName = "MyInvois e-POS_${sanitizedRef}_${sanitizedUuid}.pdf";
+  Future<void> _initPermissionsAndNotifications() async {
+    await _initNotifications();
+    await Permission.camera.request();
+    if (Platform.isAndroid) {
+      if (await Permission.storage.request().isGranted) {
+      } else if (await Permission.manageExternalStorage.status.isDenied) {
+        await Permission.manageExternalStorage.request();
       }
-      else if (fileName.isEmpty || fileName.toLowerCase().contains("unknown")) {
-        String extension = 'pdf';
-        if (mimeType.contains('image')) extension = 'png';
-        fileName = "Odoo_Doc_${DateTime.now().millisecondsSinceEpoch}.$extension";
-      }
-        
-      fileName = fileName.replaceAll('/', '_').replaceAll('\\', '_');
-      if (mimeType == 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')) {
-        fileName += '.pdf';
-      }
-
-      String filePath = "";
-      
-      if (Platform.isAndroid) {
-        String path = await ExternalPath.getExternalStoragePublicDirectory(ExternalPath.DIRECTORY_DOWNLOAD);
-        File file = File('$path/$fileName');
-        
-        if (await file.exists()) {
-          String nameWithoutExt = fileName.split('.').first;
-          String ext = fileName.split('.').last;
-          file = File('$path/${nameWithoutExt}_${DateTime.now().millisecondsSinceEpoch}.$ext');
-        }
-        
-        await file.writeAsBytes(bytes, flush: true);
-        filePath = file.path;
-        
-        await _showNotification(fileName, filePath);
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Saved: $fileName'),
-            backgroundColor: Colors.green,
-            action: SnackBarAction(
-              label: 'OPEN',
-              textColor: Colors.white,
-              onPressed: () => _openFile(filePath),
-            ),
-          ));
-        }
-      } 
-      else if (Platform.isIOS) {
-        final directory = await getApplicationDocumentsDirectory();
-        final file = File('${directory.path}/$fileName');
-        await file.writeAsBytes(bytes, flush: true);
-        filePath = file.path;
-        _openFile(filePath);
-      }
-    } catch (e) {
-      log("Error saving file: $e");
+      await Permission.notification.request();
     }
   }
 
-  Future<void> _saveBase64ToFile(String dataUrl, String mimeType, String? name) async {
-    try {
-      final split = dataUrl.split(',');
-      if (split.length < 2) return;
-      final bytes = base64Decode(split[1]);
-      await _saveDataToFile(bytes, mimeType, name);
-    } catch (e) {
-      log("Base64 error: $e");
-    }
-  }
+  Future<void> _initNotifications() async {
+    const AndroidInitializationSettings initializationSettingsAndroid =
+    AndroidInitializationSettings('@mipmap/ic_launcher');
 
-  // ===========================================================================
-  // DOWNLOAD HANDLERS
-  // ===========================================================================
+    final DarwinInitializationSettings initializationSettingsDarwin =
+    DarwinInitializationSettings(
+        requestSoundPermission: false,
+        requestBadgePermission: false,
+        requestAlertPermission: false);
 
-  Future<void> _processBlobUrl(String blobUrl, String? suggestedFileName) async {
-    String fileNameArg = suggestedFileName ?? '';
-    fileNameArg = fileNameArg.replaceAll("'", "\\'");
+    final InitializationSettings initializationSettings = InitializationSettings(
+        android: initializationSettingsAndroid, iOS: initializationSettingsDarwin);
 
-    String script = """
-      (async function() {
-        try {
-          var response = await fetch('$blobUrl');
-          var blob = await response.blob();
-          
-          var reader = new FileReader();
-          reader.onloadend = function() {
-            var base64data = reader.result;
-            window.flutter_inappwebview.callHandler('BlobDownloader', base64data, blob.type, '$fileNameArg');
+    await flutterLocalNotificationsPlugin.initialize(initializationSettings,
+        onDidReceiveNotificationResponse: (response) {
+          if (response.payload != null) {
+            _openFile(response.payload!);
           }
-          reader.readAsDataURL(blob);
-        } catch (e) {
-          console.error("Error fetching blob: " + e);
-        }
-      })();
-    """;
-    await _webViewController?.evaluateJavascript(source: script);
+        });
   }
 
-  Future<void> _handleDownload(String url, String? suggestedFileName) async {
-    Uri uri = Uri.parse(url);
+  Future<void> _showNotification(String fileName, String filePath) async {
+    if (!Platform.isAndroid) return;
 
-    if (uri.scheme == 'blob') {
-      await _processBlobUrl(url, suggestedFileName);
-      return;
-    }
-    if (uri.scheme == 'data') {
-      await _saveBase64ToFile(url, 'application/pdf', suggestedFileName);
-      return;
-    }
+    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      'download_channel_id',
+      'Downloads',
+      channelDescription: 'Downloaded files',
+      importance: Importance.high,
+      priority: Priority.high,
+      icon: '@mipmap/ic_launcher',
+    );
 
     try {
-      if (Platform.isIOS) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Preparing Document...')),
-          );
-        }
-        
-        CookieManager cookieManager = CookieManager.instance();
-        List<Cookie> cookies = await cookieManager.getCookies(url: WebUri(url));
-        String cookieHeader = cookies.map((c) => "${c.name}=${c.value}").join("; ");
-
-        final response = await http.get(
-          uri,
-          headers: {'Cookie': cookieHeader, 'User-Agent': 'FlutterApp'},
-        );
-
-        if (response.statusCode == 200) {
-          await _saveDataToFile(response.bodyBytes, 'application/pdf', suggestedFileName);
-        }
-      } else {
-        if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-          await launchUrl(uri, mode: LaunchMode.platformDefault);
-        }
-      }
+      await flutterLocalNotificationsPlugin.show(
+        DateTime.now().millisecond,
+        'Download Complete',
+        fileName,
+        const NotificationDetails(android: androidDetails),
+        payload: filePath,
+      );
     } catch (e) {
-      log("Download error: $e");
+      log("Notification Error: $e");
     }
+  }
+
+  // ===========================================================================
+  // MARK: - HELPER UTILS
+  // ===========================================================================
+
+  String _extractDataFromQr(String rawData) {
+    if (rawData.contains("TIN") || rawData.contains("Taxpayer Profile")) {
+      try {
+        final RegExp tinRegex = RegExp(r'TIN\s*[:\n\r\s]+\s*([A-Z0-9]+)', caseSensitive: false);
+        final match = tinRegex.firstMatch(rawData);
+        if (match != null && match.group(1) != null) {
+          return match.group(1)!;
+        }
+      } catch (e) {
+        log("Error parsing TIN: $e");
+      }
+    }
+    return rawData;
   }
 
   String _getFilenameFromContentDisposition(String contentDisposition) {
@@ -369,29 +583,47 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   // ===========================================================================
-  // JS INJECTION
+  // MARK: - JAVASCRIPT INJECTION LOGIC
   // ===========================================================================
 
   Future<void> _injectCustomJavaScript(InAppWebViewController controller) async {
+    // Note: This script performs DOM manipulation to:
+    // 1. Scrape Transaction/UUID
+    // 2. Hijack Barcode/Scanner inputs
+    // 3. Hijack Buttons for native features
+    // 4. E-Invoice Listener (Updated to target 'action_print_pos_invoice')
+    // 5. Print Receipt Hijacking
+
     String script = """
       (function() {
         console.log("Injecting Odoo Mobile Hooks...");
 
-        // 1. TRANSACTION SCRAPER
+        // HELPER: Scrape Odoo Fields (Handles Input vs Span vs Div)
+        function getOdooFieldValue(fieldName) {
+            var el = document.querySelector('[name="' + fieldName + '"]');
+            if (!el) {
+                // Try finding label if direct name attribute missing
+                var label = Array.from(document.querySelectorAll('label')).find(l => l.innerText.includes(fieldName));
+                if (label && label.nextElementSibling) el = label.nextElementSibling;
+            }
+            if (el) {
+                if (el.tagName === 'INPUT') return el.value;
+                return el.innerText.trim();
+            }
+            return null;
+        }
+
+        // 1. TRANSACTION SCRAPER (Periodic Backup)
         function scrapeTransactionDetails() {
             try {
-                var getValue = function(el) {
-                    if (!el) return null;
-                    if (el.tagName === 'INPUT') return el.value;
-                    if (el.tagName === 'SPAN' || el.tagName === 'DIV' || el.tagName === 'B') return el.innerText;
-                    return null;
-                };
-                var orderRef = getValue(document.querySelector('[name="name"]'));
-                var uuid = getValue(document.querySelector('[name="uuid"]'));
+                var orderRef = getOdooFieldValue('name');
+                // Fallback for Ref
                 if (!orderRef) {
-                   var breadcrumb = document.querySelector('.o_breadcrumb .active');
-                   if (breadcrumb) orderRef = breadcrumb.innerText;
+                    var breadcrumb = document.querySelector('.o_breadcrumb .active');
+                    if (breadcrumb) orderRef = breadcrumb.innerText;
                 }
+                var uuid = getOdooFieldValue('uuid');
+                
                 if (orderRef) {
                     window.flutter_inappwebview.callHandler('TransactionInfoHandler', orderRef, uuid);
                 }
@@ -450,7 +682,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
            }
         };
 
-        // 3. HIJACK BUTTONS
+        // 3. HIJACK STANDARD QR BUTTONS
         function hijackButtons() {
            var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode'];
            selectors.forEach(function(sel) {
@@ -472,13 +704,39 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         }
         setInterval(hijackButtons, 1000);
 
-        // 4. POS RECEIPT PRINTING HIJACKER (FIXED WIDTH REMOVED)
+        // 4. E-INVOICE BUTTON LISTENER (action_print_pos_invoice)
+        // Captures Ref & UUID immediately on click to ensure filename is correct
+        function attachEInvoiceListener() {
+           var btn = document.querySelector('button[name="action_print_pos_invoice"]');
+           if (btn && !btn.getAttribute('data-flutter-listener')) {
+               btn.setAttribute('data-flutter-listener', 'true');
+               
+               btn.addEventListener('click', function() {
+                   console.log("Print e-Invoice Button Clicked");
+                   try {
+                       var orderRef = getOdooFieldValue('name');
+                       // Fallback for Ref if not found in form
+                       if (!orderRef) {
+                           var breadcrumb = document.querySelector('.o_breadcrumb .active');
+                           if (breadcrumb) orderRef = breadcrumb.innerText;
+                       }
+                       var uuid = getOdooFieldValue('uuid');
+
+                       if (orderRef) {
+                           console.log("Sending Ref: " + orderRef + " UUID: " + uuid);
+                           window.flutter_inappwebview.callHandler('TransactionInfoHandler', orderRef, uuid);
+                       }
+                   } catch(e) {
+                       console.error("Error scraping on e-invoice click: " + e);
+                   }
+               });
+           }
+        }
+        setInterval(attachEInvoiceListener, 1000);
+
+
+        // 5. EXISTING POS RECEIPT PRINTING HIJACKER (For .button.print)
         document.body.addEventListener('click', function(e) {
-           
-
-[Image of DOM tree structure]
-
-           // Locate the specific button class
            var btn = e.target.closest('.button.print');
            
            if (btn) {
@@ -500,7 +758,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     }
                  });
 
-                 // EXTRACT REF
+                 // EXTRACT REF from Receipt Text (Backup extraction)
                  var extractedRef = null;
                  try {
                      var text = receiptContainer.innerText || "";
@@ -510,7 +768,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
                  var content = clone.outerHTML;
 
-                 // INJECT CSS: FULL WIDTH, NO 302px LIMIT
                  var style = `
                     <style>
                         @import url('https://fonts.googleapis.com/css?family=Inconsolata:400,700&display=swap');
@@ -521,10 +778,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                            color: black; 
                            margin: 0; 
                            padding: 20px;
-                           width: 100%; /* FULL WIDTH */
+                           width: 100%;
                         }
-
-                        /* Bootstrap Utility Mimics for Odoo XML */
                         .d-flex { display: flex; }
                         .flex-column { flex-direction: column; }
                         .justify-content-center { justify-content: center; }
@@ -538,10 +793,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         .ms-2 { margin-left: 0.5rem; }
                         .w-100 { width: 100%; }
                         
-                        /* Receipt Container Logic */
                         .pos-receipt { 
                             padding: 5px; 
-                            width: 100%; /* Stretch to fit page */
+                            width: 100%; 
                             box-sizing: border-box;
                         }
                         
@@ -549,7 +803,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         .card { border: none; width: 100%; } 
                         .card-body { padding: 0; }
                         
-                        /* Table Styling - Essential for full width */
                         table { width: 100% !important; border-collapse: collapse; }
                         td, th { vertical-align: top; padding: 2px 0; font-size: 12px; }
                         
@@ -574,213 +827,5 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       })();
     """;
     await controller.evaluateJavascript(source: script);
-  }
-
-  // ===========================================================================
-  // WIDGET BUILD
-  // ===========================================================================
-
-  @override
-  Widget build(BuildContext context) {
-    final String userAgent = _isTablet
-        ? "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-        : "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36";
-
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(
-        statusBarColor: Colors.white,
-        statusBarIconBrightness: Brightness.dark,
-        statusBarBrightness: Brightness.light,
-        systemNavigationBarColor: Colors.white,
-      ),
-      child: PopScope(
-        canPop: false,
-        onPopInvoked: (didPop) async {
-          if (didPop) return;
-          if (_webViewController != null && await _webViewController!.canGoBack()) {
-            _webViewController!.goBack();
-          } else {
-            if (context.mounted) Navigator.of(context).pop();
-          }
-        },
-        child: Scaffold(
-          resizeToAvoidBottomInset: !Platform.isIOS,
-          backgroundColor: Colors.white,
-          body: SafeArea(
-            child: Column(
-              children: [
-                if (_isLoading)
-                  const LinearProgressIndicator(minHeight: 3, color: Colors.blue),
-                Expanded(
-                  child: InAppWebView(
-                    initialUrlRequest: URLRequest(url: WebUri(widget.url)),
-                    initialUserScripts: UnmodifiableListView<UserScript>([
-                      _apiDisablerScript, 
-                    ]),
-                    initialOptions: InAppWebViewGroupOptions(
-                      crossPlatform: InAppWebViewOptions(
-                        javaScriptEnabled: true,
-                        mediaPlaybackRequiresUserGesture: false,
-                        useOnDownloadStart: true,
-                        userAgent: userAgent,
-                      ),
-                      android: AndroidInAppWebViewOptions(
-                        useHybridComposition: true,
-                        supportMultipleWindows: true,
-                        mixedContentMode: AndroidMixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
-                      ),
-                      ios: IOSInAppWebViewOptions(
-                        allowsInlineMediaPlayback: true,
-                        disallowOverScroll: true,
-                        sharedCookiesEnabled: true,
-                      ),
-                    ),
-                    pullToRefreshController: _pullToRefreshController,
-                    onWebViewCreated: (controller) {
-                      _webViewController = controller;
-
-                      // 1. TRANSACTION INFO HANDLER
-                      controller.addJavaScriptHandler(
-                          handlerName: 'TransactionInfoHandler', 
-                          callback: (args) {
-                              if (args.length >= 2) {
-                                  String? newRef = args[0]?.toString();
-                                  String? newUuid = args[1]?.toString();
-                                  
-                                  if (newRef != null && newRef != "null") {
-                                      setState(() {
-                                          _currentOrderRef = newRef;
-                                          if (newUuid != null && newUuid != "null") {
-                                              _currentUuid = newUuid;
-                                          }
-                                      });
-                                  }
-                              }
-                          }
-                      );
-
-                      // 2. QR HANDLER
-                      controller.addJavaScriptHandler(
-                        handlerName: 'NativeQRScanner',
-                        callback: (args) async {
-                          final String? qrData = await Navigator.push<String>(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => const QRScannerScreen(),
-                            ),
-                          );
-
-                          if (qrData != null && qrData.isNotEmpty) {
-                            String filteredData = _extractDataFromQr(qrData);
-                            final String escapedQrData = filteredData.replaceAll("'", "\\'");
-                            String script = "if(window.onFlutterBarcodeScanned) { window.onFlutterBarcodeScanned('$escapedQrData'); }";
-                            _webViewController?.evaluateJavascript(source: script);
-                          }
-                        },
-                      );
-
-                      // 3. BLOB HANDLER
-                      controller.addJavaScriptHandler(
-                        handlerName: 'BlobDownloader',
-                        callback: (args) async {
-                          if (args.isNotEmpty) {
-                            String dataUrl = args[0].toString();
-                            String mimeType = args.length > 1 ? args[1].toString() : 'application/pdf';
-                            String? fileName = args.length > 2 ? args[2].toString() : null;
-                            await _saveBase64ToFile(dataUrl, mimeType, fileName);
-                          }
-                        },
-                      );
-
-                      // 4. PRINT HANDLER (POS Receipt)
-                      controller.addJavaScriptHandler(
-                        handlerName: 'PrintPosReceipt',
-                        callback: (args) async {
-                          if (args.isNotEmpty) {
-                            String receiptHtml = args[0].toString();
-                            
-                            if (args.length > 1 && args[1] != null && args[1].toString() != "null") {
-                                String extractedRef = args[1].toString();
-                                setState(() {
-                                    _currentOrderRef = extractedRef;
-                                });
-                            }
-
-                            try {
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('Generating Receipt...'), duration: Duration(seconds: 1)),
-                                );
-                              }
-                              
-                              String fileName = "Receipt";
-                              if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
-                                fileName += "_${_currentOrderRef!.replaceAll('/', '_')}";
-                              } else {
-                                fileName += "_${DateTime.now().millisecondsSinceEpoch}";
-                              }
-                              fileName += ".pdf";
-
-                              // GENERATE PDF
-                              // Changed to roll80 for 80mm thermal printer format
-                              final Uint8List pdfBytes = await Printing.convertHtml(
-                                html: receiptHtml,
-                                format: PdfPageFormat.roll80, // 80mm thermal printer format
-                              );
-
-                              // SAVE TO TEMP
-                              final tempDir = await getTemporaryDirectory();
-                              final tempFile = File('${tempDir.path}/$fileName');
-                              await tempFile.writeAsBytes(pdfBytes, flush: true);
-
-                              // NAVIGATE TO PDF VIEWER
-                              if (mounted) {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => PdfViewerScreen(filePath: tempFile.path),
-                                  ),
-                                );
-                              }
-
-                            } catch (e) {
-                              log("Error processing receipt: $e");
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text("Receipt Gen Error: $e"))
-                                );
-                              }
-                            }
-                          }
-                        },
-                      );
-                    },
-                    onLoadStop: (controller, url) {
-                      _pullToRefreshController.endRefreshing();
-                      _injectCustomJavaScript(controller); 
-                      setState(() => _isLoading = false);
-                    },
-                    onPermissionRequest: (controller, request) async {
-                      return PermissionResponse(
-                        resources: request.resources,
-                        action: PermissionResponseAction.GRANT,
-                      );
-                    },
-                    onDownloadStartRequest: (controller, downloadRequest) async {
-                      String finalFileName = downloadRequest.suggestedFilename ?? "";
-                      if (downloadRequest.contentDisposition != null) {
-                        String parsedName = _getFilenameFromContentDisposition(downloadRequest.contentDisposition!);
-                        if (parsedName.isNotEmpty) finalFileName = parsedName;
-                      }
-                      await _handleDownload(downloadRequest.url.toString(), finalFileName);
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }
