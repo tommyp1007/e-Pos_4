@@ -403,23 +403,19 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     try {
       String fileName = suggestedFileName ?? "";
 
-      // --- CUSTOM NAMING LOGIC FOR E-POS ---
-      // Format: MyInvois e-POS_{OrderRef}_{UUID}.pdf
       if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
-        String cleanRef = _currentOrderRef!.trim().replaceAll('/', '_').replaceAll('\\', '_');
-        String cleanUuid = (_currentUuid != null && _currentUuid != "null" && _currentUuid!.isNotEmpty)
-            ? _currentUuid!.trim()
-            : "No-UUID";
+        String sanitizedRef = _currentOrderRef!.replaceAll('/', '_').replaceAll(' ', '_').trim();
+        String sanitizedUuid = (_currentUuid != null && _currentUuid!.isNotEmpty && _currentUuid != 'null')
+            ? _currentUuid!.replaceAll('/', '_').trim()
+            : "e-Invoice";
 
-        fileName = "MyInvois e-POS_${cleanRef}_${cleanUuid}.pdf";
-      } else if (fileName.isEmpty || fileName.toLowerCase().contains("unknown") || fileName.toLowerCase().contains("document")) {
-        // Fallback
+        fileName = "MyInvois e-POS_${sanitizedRef}_${sanitizedUuid}.pdf";
+      } else if (fileName.isEmpty || fileName.toLowerCase().contains("unknown")) {
         String extension = 'pdf';
         if (mimeType.contains('image')) extension = 'png';
         fileName = "Odoo_Doc_${DateTime.now().millisecondsSinceEpoch}.$extension";
       }
 
-      // Cleanup filename
       fileName = fileName.replaceAll('/', '_').replaceAll('\\', '_');
       if (mimeType == 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')) {
         fileName += '.pdf';
@@ -432,9 +428,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         File file = File('$path/$fileName');
 
         if (await file.exists()) {
-          String nameWithoutExt = fileName.substring(0, fileName.lastIndexOf('.'));
-          String ext = fileName.substring(fileName.lastIndexOf('.'));
-          file = File('$path/${nameWithoutExt}_${DateTime.now().millisecondsSinceEpoch}$ext');
+          String nameWithoutExt = fileName.split('.').first;
+          String ext = fileName.split('.').last;
+          file = File('$path/${nameWithoutExt}_${DateTime.now().millisecondsSinceEpoch}.$ext');
         }
 
         await file.writeAsBytes(bytes, flush: true);
@@ -591,41 +587,30 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     // 1. Scrape Transaction/UUID
     // 2. Hijack Barcode/Scanner inputs
     // 3. Hijack Buttons for native features
-    // 4. E-Invoice Listener (Updated to target 'action_print_pos_invoice')
+    // 4. E-Invoice Listener
     // 5. Print Receipt Hijacking
 
     String script = """
       (function() {
         console.log("Injecting Odoo Mobile Hooks...");
 
-        // HELPER: Scrape Odoo Fields (Handles Input vs Span vs Div)
-        function getOdooFieldValue(fieldName) {
-            var el = document.querySelector('[name="' + fieldName + '"]');
-            if (!el) {
-                // Try finding label if direct name attribute missing
-                var label = Array.from(document.querySelectorAll('label')).find(l => l.innerText.includes(fieldName));
-                if (label && label.nextElementSibling) el = label.nextElementSibling;
-            }
-            if (el) {
-                if (el.tagName === 'INPUT') return el.value;
-                return el.innerText.trim();
-            }
-            return null;
-        }
-
-        // 1. TRANSACTION SCRAPER (Periodic Backup)
+        // 1. TRANSACTION SCRAPER
         function scrapeTransactionDetails() {
             try {
-                var orderRef = getOdooFieldValue('name');
-                // Fallback for Ref
+                var getValue = function(el) {
+                    if (!el) return null;
+                    if (el.tagName === 'INPUT') return el.value;
+                    if (el.tagName === 'SPAN' || el.tagName === 'DIV' || el.tagName === 'B') return el.innerText;
+                    return null;
+                };
+                var orderRef = getValue(document.querySelector('[name="name"]'));
+                var uuid = getValue(document.querySelector('[name="uuid"]'));
                 if (!orderRef) {
-                    var breadcrumb = document.querySelector('.o_breadcrumb .active');
-                    if (breadcrumb) orderRef = breadcrumb.innerText;
+                   var breadcrumb = document.querySelector('.o_breadcrumb .active');
+                   if (breadcrumb) orderRef = breadcrumb.innerText;
                 }
-                var uuid = getOdooFieldValue('uuid');
-                
                 if (orderRef) {
-                    window.flutter_inappwebview.callHandler('TransactionInfoHandler', orderRef, uuid);
+                   window.flutter_inappwebview.callHandler('TransactionInfoHandler', orderRef, uuid);
                 }
             } catch(e) {}
         }
@@ -682,7 +667,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
            }
         };
 
-        // 3. HIJACK STANDARD QR BUTTONS
+        // 3. HIJACK BUTTONS
         function hijackButtons() {
            var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode'];
            selectors.forEach(function(sel) {
@@ -704,26 +689,35 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         }
         setInterval(hijackButtons, 1000);
 
-        // 4. E-INVOICE BUTTON LISTENER (action_print_pos_invoice)
-        // Captures Ref & UUID immediately on click to ensure filename is correct
+        // 4. POS RECEIPT PRINTING HIJACKER (FIXED WIDTH REMOVED)
+        document.body.addEventListener('click', function(e) {
+
+        // 5. E-INVOICE BUTTON LISTENER (NEW)
+        // Captures Ref & UUID immediately on click to ensure filename is correct during download
         function attachEInvoiceListener() {
            var btn = document.querySelector('button[name="action_print_pos_invoice"]');
            if (btn && !btn.getAttribute('data-flutter-listener')) {
                btn.setAttribute('data-flutter-listener', 'true');
-               
                btn.addEventListener('click', function() {
-                   console.log("Print e-Invoice Button Clicked");
                    try {
-                       var orderRef = getOdooFieldValue('name');
+                       var getValue = function(el) {
+                           if (!el) return null;
+                           if (el.tagName === 'INPUT') return el.value;
+                           if (el.tagName === 'SPAN' || el.tagName === 'DIV' || el.tagName === 'B') return el.innerText;
+                           return null;
+                       };
+                       
+                       var orderRef = getValue(document.querySelector('[name="name"]'));
+                       var uuid = getValue(document.querySelector('[name="uuid"]'));
+                       
                        // Fallback for Ref if not found in form
                        if (!orderRef) {
                            var breadcrumb = document.querySelector('.o_breadcrumb .active');
                            if (breadcrumb) orderRef = breadcrumb.innerText;
                        }
-                       var uuid = getOdooFieldValue('uuid');
 
                        if (orderRef) {
-                           console.log("Sending Ref: " + orderRef + " UUID: " + uuid);
+                           console.log("E-Invoice Clicked. Updating Flutter State with Ref: " + orderRef);
                            window.flutter_inappwebview.callHandler('TransactionInfoHandler', orderRef, uuid);
                        }
                    } catch(e) {
@@ -734,9 +728,14 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         }
         setInterval(attachEInvoiceListener, 1000);
 
+      })();
 
-        // 5. EXISTING POS RECEIPT PRINTING HIJACKER (For .button.print)
-        document.body.addEventListener('click', function(e) {
+      
+
+[Image of DOM tree structure]
+
+
+           // Locate the specific button class
            var btn = e.target.closest('.button.print');
            
            if (btn) {
@@ -758,7 +757,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     }
                  });
 
-                 // EXTRACT REF from Receipt Text (Backup extraction)
+                 // EXTRACT REF
                  var extractedRef = null;
                  try {
                      var text = receiptContainer.innerText || "";
@@ -768,6 +767,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
                  var content = clone.outerHTML;
 
+                 // INJECT CSS: FULL WIDTH, NO 302px LIMIT
                  var style = `
                     <style>
                         @import url('https://fonts.googleapis.com/css?family=Inconsolata:400,700&display=swap');
@@ -778,8 +778,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                            color: black; 
                            margin: 0; 
                            padding: 20px;
-                           width: 100%;
+                           width: 100%; /* FULL WIDTH */
                         }
+
+                        /* Bootstrap Utility Mimics for Odoo XML */
                         .d-flex { display: flex; }
                         .flex-column { flex-direction: column; }
                         .justify-content-center { justify-content: center; }
@@ -793,9 +795,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         .ms-2 { margin-left: 0.5rem; }
                         .w-100 { width: 100%; }
                         
+                        /* Receipt Container Logic */
                         .pos-receipt { 
                             padding: 5px; 
-                            width: 100%; 
+                            width: 100%; /* Stretch to fit page */
                             box-sizing: border-box;
                         }
                         
@@ -803,6 +806,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         .card { border: none; width: 100%; } 
                         .card-body { padding: 0; }
                         
+                        /* Table Styling - Essential for full width */
                         table { width: 100% !important; border-collapse: collapse; }
                         td, th { vertical-align: top; padding: 2px 0; font-size: 12px; }
                         
