@@ -1,9 +1,8 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui'; 
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; 
 import 'package:flutter_pdfview/flutter_pdfview.dart';
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
@@ -67,8 +66,6 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
         final String fileName = widget.filePath.split(Platform.pathSeparator).last;
         
         // This opens the Native Android/iOS print dialog.
-        // The format parameter here dictates the system/native print dialog's initial size, 
-        // but since we return raw bytes, the printer service takes over the final layout/size.
         await Printing.layoutPdf(
           onLayout: (format) async => bytes,
           name: fileName,
@@ -94,16 +91,26 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     );
   }
 
+  // --- NAVIGATION LOGIC ---
+  Future<void> _changePage(int offset) async {
+    final controller = await _controller.future;
+    int newPage = _currentPage + offset;
+    if (newPage >= 0 && newPage < _totalPages) {
+      await controller.setPage(newPage);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final String fileName = widget.filePath.split(Platform.pathSeparator).last;
 
     return Scaffold(
-      backgroundColor: Colors.grey[200], 
+      backgroundColor: Colors.grey[100], 
       appBar: AppBar(
         elevation: 0,
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
+        centerTitle: true,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new_rounded),
           onPressed: () => Navigator.of(context).pop(),
@@ -123,7 +130,6 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
               );
             }
           ),
-          // --- THE PRINT BUTTON ---
           IconButton(
             icon: const Icon(Icons.print_rounded),
             tooltip: 'Print Receipt',
@@ -134,41 +140,106 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
       body: SafeArea(
         child: Stack(
           children: [
-            // PDF Viewer
-            PDFView(
-              filePath: widget.filePath,
-              enableSwipe: true,
-              swipeHorizontal: false, 
-              autoSpacing: false, 
-              pageFling: false,
-              pageSnap: false,
-              fitPolicy: FitPolicy.WIDTH, 
-              onRender: (pages) {
-                setState(() {
-                  _totalPages = pages ?? 0;
-                  _isReady = true;
-                });
-              },
-              onError: (error) {
-                setState(() {
-                  _errorMessage = error.toString();
-                });
-              },
-              onViewCreated: (PDFViewController pdfViewController) {
-                _controller.complete(pdfViewController);
-              },
+            // 1. PDF VIEWER (Fills the screen)
+            Positioned.fill(
+              child: PDFView(
+                filePath: widget.filePath,
+                enableSwipe: true,
+                swipeHorizontal: false, // Vertical scrolling is better for receipts
+                autoSpacing: true,      // Essential for fitting on tablets
+                pageFling: true,        // Native feel
+                pageSnap: true,         // Snaps to page (good for Next/Prev buttons)
+                // Forces width to fill screen (fixes small tablet view)
+                fitPolicy: FitPolicy.WIDTH, 
+                
+                onRender: (pages) {
+                  setState(() {
+                    _totalPages = pages ?? 0;
+                    _isReady = true;
+                  });
+                },
+                onError: (error) {
+                  setState(() {
+                    _errorMessage = error.toString();
+                  });
+                },
+                onPageChanged: (int? page, int? total) {
+                  setState(() {
+                    _currentPage = page ?? 0;
+                  });
+                },
+                onViewCreated: (PDFViewController pdfViewController) {
+                  _controller.complete(pdfViewController);
+                },
+              ),
             ),
 
+            // 2. LOADING INDICATOR
             if (!_isReady && _errorMessage.isEmpty)
-              const Center(child: CircularProgressIndicator(color: Colors.black)),
+              const Center(child: CircularProgressIndicator(color: Colors.blue)),
 
+            // 3. ERROR MESSAGE
             if (_errorMessage.isNotEmpty)
                Center(child: Padding(
                  padding: const EdgeInsets.all(20.0),
-                 child: Text("Error: $_errorMessage\n\nTry reopening the receipt."),
+                 child: Text(
+                   "Error: $_errorMessage\n\nTry reopening the receipt.",
+                   textAlign: TextAlign.center,
+                 ),
                )),
 
-            // Loading Overlay
+            // 4. BOTTOM NAVIGATION CONTROLS
+            if (_isReady && _totalPages > 0)
+              Positioned(
+                bottom: 20,
+                left: 20,
+                right: 20,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(50),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                    child: Container(
+                      height: 50,
+                      color: Colors.black.withOpacity(0.7),
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          IconButton(
+                            icon: Icon(Icons.arrow_back_ios_rounded, 
+                              color: _currentPage > 0 ? Colors.white : Colors.grey,
+                              size: 18,
+                            ),
+                            onPressed: _currentPage > 0 
+                              ? () => _changePage(-1) 
+                              : null,
+                          ),
+                          
+                          Text(
+                            "Page ${_currentPage + 1} of $_totalPages",
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+
+                          IconButton(
+                            icon: Icon(Icons.arrow_forward_ios_rounded, 
+                              color: _currentPage < _totalPages - 1 ? Colors.white : Colors.grey,
+                              size: 18,
+                            ),
+                            onPressed: _currentPage < _totalPages - 1 
+                              ? () => _changePage(1) 
+                              : null,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // 5. EXPORT LOADING OVERLAY
             if (_isExporting)
               Positioned.fill(
                 child: BackdropFilter(
