@@ -178,6 +178,15 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                       setState(() => _isLoading = false);
                     },
                     onPermissionRequest: (controller, request) async {
+                      // 1. If it's a Camera request, BLOCK IT.
+                      //// This forces Odoo's internal JS to fail, preventing the "cr_VideoCapture" logs.
+                      if (request.resources.contains(PermissionResourceType.CAMERA)) {
+                        return PermissionResponse(
+                          resources: request.resources,
+                          action: PermissionResponseAction.DENY, 
+                          );
+                      }
+                      // 2. Allow other things (like storage/microphone if needed)
                       return PermissionResponse(
                         resources: request.resources,
                         action: PermissionResponseAction.GRANT,
@@ -278,13 +287,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               );
             }
 
-            String fileName = "Receipt";
-            if (_currentOrderRef != null && _currentOrderRef!.isNotEmpty) {
-              fileName += "_${_currentOrderRef!.replaceAll('/', '_')}";
-            } else {
-              fileName += "_${DateTime.now().millisecondsSinceEpoch}";
-            }
-            fileName += ".pdf";
+            // --- CHANGED: Use Date/Time for receipt filename as well ---
+            DateTime now = DateTime.now();
+            String timestamp = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}";
+            
+            String fileName = "Receipt_$timestamp.pdf";
 
             // Generate PDF (80mm thermal format)
             final Uint8List pdfBytes = await Printing.convertHtml(
@@ -402,21 +409,20 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   Future<void> _saveDataToFile(List<int> bytes, String mimeType, String? suggestedFileName) async {
     try {
       // --- NEW NAMING LOGIC START ---
-      // 1. Generate a valid timestamp string (e.g. 2023-10-25_14-30-05)
-      // We remove the milliseconds, replace space with underscore, and colons with dashes.
+      // 1. Get current date and time
       String timestamp = DateTime.now()
-          .toString()
-          .split('.')[0] // Remove milliseconds
-          .replaceAll(':', '-') // Replace invalid filename char ':' with '-'
-          .replaceAll(' ', '_'); // Replace space with '_'
+          .toString()             // e.g., "2025-12-07 21:10:12.123456"
+          .split('.')[0]          // Remove milliseconds -> "2025-12-07 21:10:12"
+          .replaceAll(':', '-')   // Replace colons with dashes (safer for filenames)
+          .replaceAll(' ', '_');  // Replace space with underscore
 
-      // 2. Set the file name
+      // 2. Set the file name as requested
       String fileName = "MyInvois e-POS_$timestamp.pdf";
       // --- NEW NAMING LOGIC END ---
 
       // Ensure valid file path characters just in case
       fileName = fileName.replaceAll('/', '_').replaceAll('\\', '_');
-      
+
       // Double check extension
       if (mimeType == 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')) {
         fileName += '.pdf';
@@ -593,245 +599,131 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     // 5. Print Receipt Hijacking
 
     String script = """
-      (function() {
-        console.log("Injecting Odoo Mobile Hooks...");
+    (function() {
+      console.log("Injecting Odoo Mobile Hooks...");
 
-        // 1. TRANSACTION SCRAPER
-        function scrapeTransactionDetails() {
-            try {
-                var getValue = function(el) {
-                    if (!el) return null;
-                    if (el.tagName === 'INPUT') return el.value;
-                    if (el.tagName === 'SPAN' || el.tagName === 'DIV' || el.tagName === 'B') return el.innerText;
-                    return null;
-                };
-                var orderRef = getValue(document.querySelector('[name="name"]'));
-                var uuid = getValue(document.querySelector('[name="uuid"]'));
-                if (!orderRef) {
-                   var breadcrumb = document.querySelector('.o_breadcrumb .active');
-                   if (breadcrumb) orderRef = breadcrumb.innerText;
-                }
-                if (orderRef) {
-                   window.flutter_inappwebview.callHandler('TransactionInfoHandler', orderRef, uuid);
-                }
-            } catch(e) {}
-        }
-        setInterval(scrapeTransactionDetails, 1500);
-
-        // 2. BARCODE SCANNER
-        window.onFlutterBarcodeScanned = function(code) {
-           console.log("Received barcode: " + code);
+      // ============================================================
+      // 1. BARCODE INPUT HANDLER
+      // Purpose: This is the function Flutter calls when YOU scan a barcode with the native camera.
+      // It takes that code and tries to "type" it into Odoo's search bars automatically.
+      // ============================================================
+      window.onFlutterBarcodeScanned = function(code) {
+         console.log("Received barcode: " + code);
+         
+         // --- LOGIC A: Customer Search (POS) ---
+         // If the "Search Customers" modal is open, type the barcode there.
+         var partnerSearchInput = document.querySelector('input[placeholder="Search Customers..."]') || document.querySelector('.sb-partner input');
+         if (partnerSearchInput && partnerSearchInput.offsetParent !== null) {
+           partnerSearchInput.setAttribute('inputmode', 'none'); // Prevent keyboard from popping up
+           partnerSearchInput.focus();
+           partnerSearchInput.value = code;
            
-           // Partner Search
-           var partnerSearchInput = document.querySelector('input[placeholder="Search Customers..."]') || document.querySelector('.sb-partner input');
-           if (partnerSearchInput && partnerSearchInput.offsetParent !== null) {
-             partnerSearchInput.focus();
-             partnerSearchInput.value = code;
-             partnerSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
-             partnerSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
-             partnerSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-             return;
-           }
+           // We must dispatch these events so Odoo's Javascript framework (Owl) detects the change
+           partnerSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
+           partnerSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
+           partnerSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
+           
+           partnerSearchInput.blur();
+           setTimeout(() => { partnerSearchInput.removeAttribute('inputmode'); }, 200);
+           return;
+         }
 
-           // Product Search
-           var productSearchInput = document.querySelector('input[placeholder="Search products..."]') || document.querySelector('input[placeholder="Carian produk..."]') || document.querySelector('.products-widget-control input');
-           if (productSearchInput && productSearchInput.offsetParent !== null) {
-             productSearchInput.focus();
-             productSearchInput.value = code;
-             productSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
-             productSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
-             productSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-             
-             setTimeout(function() {
-                 var plusIcon = document.querySelector('#qty_btn_product .fa-plus');
-                 if (plusIcon && plusIcon.closest('a')) {
-                   plusIcon.closest('a').click();
-                 } else {
-                   var firstProduct = document.querySelector('article.product');
-                   if (firstProduct) firstProduct.click();
-                 }
-             }, 700);
-             return;
-           }
+         // --- LOGIC B: Product Search (POS) ---
+         // If we are on the main POS screen, type into the product search bar.
+         var productSearchInput = document.querySelector('input[placeholder="Search products..."]') || document.querySelector('input[placeholder="Carian produk..."]') || document.querySelector('.products-widget-control input');
+         if (productSearchInput && productSearchInput.offsetParent !== null) {
+           productSearchInput.setAttribute('inputmode', 'none');
+           productSearchInput.focus();
+           productSearchInput.value = code;
+           
+           // Trigger Odoo to filter products
+           productSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
+           productSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
+           productSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
+           productSearchInput.blur();
+           setTimeout(() => { productSearchInput.removeAttribute('inputmode'); }, 200);
+           
+           // Special Trick: After scanning, try to automatically click the "Add" (+) button 
+           // or select the first product that appears.
+           setTimeout(function() {
+               var plusIcon = document.querySelector('#qty_btn_product .fa-plus');
+               if (plusIcon && plusIcon.closest('a')) {
+                 plusIcon.closest('a').click();
+               } else {
+                 var firstProduct = document.querySelector('article.product');
+                 if (firstProduct) firstProduct.click();
+               }
+           }, 700);
+           return;
+         }
 
-           // Fallback
-           window.dispatchEvent(new CustomEvent('barcode_scanned', { detail: code }));
-           var target = document.activeElement || document.body;
-           if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-             target.value = code;
-             target.dispatchEvent(new Event('change', { bubbles: true }));
-             target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-           } else {
-             for (var i = 0; i < code.length; i++) {
-                 document.body.dispatchEvent(new KeyboardEvent('keypress', { key: code[i], char: code[i], bubbles: true }));
-             }
-             document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+         // --- LOGIC C: Fallback (Inventory/Generic) ---
+         // If we aren't in POS, simulate raw keyboard presses. 
+         // This works for Barcode Action forms in Inventory.
+         window.dispatchEvent(new CustomEvent('barcode_scanned', { detail: code }));
+         var target = document.activeElement || document.body;
+         
+         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+           // Standard Input typing
+           target.setAttribute('inputmode', 'none');
+           target.value = code;
+           target.dispatchEvent(new Event('change', { bubbles: true }));
+           target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+           target.blur();
+           setTimeout(() => { target.removeAttribute('inputmode'); }, 200);
+         } else {
+           // Raw Keypress simulation (for Odoo's global listener)
+           for (var i = 0; i < code.length; i++) {
+               document.body.dispatchEvent(new KeyboardEvent('keypress', { key: code[i], char: code[i], bubbles: true }));
            }
-        };
+           document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+         }
+      };
 
-        // 3. HIJACK BUTTONS
-        function hijackButtons() {
-           var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode'];
-           selectors.forEach(function(sel) {
+      // ============================================================
+      // 2. CAMERA HIJACKER (Button Replacement)
+      // ============================================================
+      function hijackButtons() {
+          var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode'];
+
+          selectors.forEach(function(sel) {
               var elements = document.querySelectorAll(sel);
               elements.forEach(function(el) {
-                 var btn = el.closest('button') || el.closest('.btn') || el;
-                 if (btn && !btn.getAttribute('data-flutter-hijacked')) {
-                    btn.setAttribute('data-flutter-hijacked', 'true');
-                    var newBtn = btn.cloneNode(true);
-                    if(btn.parentNode) btn.parentNode.replaceChild(newBtn, btn);
-                    
-                    newBtn.addEventListener('click', function(e) {
-                        e.preventDefault(); e.stopPropagation();
-                        window.flutter_inappwebview.callHandler('NativeQRScanner');
-                    });
-                 }
+                  // Find the actual button container
+                  var btn = el.closest('button') || el.closest('.btn') || el;
+
+                  // Check if we already hijacked it
+                  if (btn && !btn.getAttribute('data-flutter-hijacked')) {
+                      btn.setAttribute('data-flutter-hijacked', 'true');
+
+                      // REMOVED: btn.style.border = "2px solid red";  <-- This was making the red box
+
+                      // Add Capture Phase Listener (Trigger Native Scanner)
+                      btn.addEventListener('click', function(e) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          e.stopImmediatePropagation();
+                          window.flutter_inappwebview.callHandler('NativeQRScanner');
+                      }, true); 
+                  }
               });
-           });
-        }
-        setInterval(hijackButtons, 1000);
+          });
+      }
 
-        // 4. POS RECEIPT PRINTING HIJACKER (FIXED WIDTH REMOVED)
-        document.body.addEventListener('click', function(e) {
+      // Run immediately and every 1s to catch new buttons
+      hijackButtons();
+      setInterval(hijackButtons, 1000);
 
-        // 5. E-INVOICE BUTTON LISTENER (NEW)
-        // Captures Ref & UUID immediately on click to ensure filename is correct during download
-        function attachEInvoiceListener() {
-           var btn = document.querySelector('button[name="action_print_pos_invoice"]');
-           if (btn && !btn.getAttribute('data-flutter-listener')) {
-               btn.setAttribute('data-flutter-listener', 'true');
-               btn.addEventListener('click', function() {
-                   try {
-                       var getValue = function(el) {
-                           if (!el) return null;
-                           if (el.tagName === 'INPUT') return el.value;
-                           if (el.tagName === 'SPAN' || el.tagName === 'DIV' || el.tagName === 'B') return el.innerText;
-                           return null;
-                       };
-                       
-                       var orderRef = getValue(document.querySelector('[name="name"]'));
-                       var uuid = getValue(document.querySelector('[name="uuid"]'));
-                       
-                       // Fallback for Ref if not found in form
-                       if (!orderRef) {
-                           var breadcrumb = document.querySelector('.o_breadcrumb .active');
-                           if (breadcrumb) orderRef = breadcrumb.innerText;
-                       }
-
-                       if (orderRef) {
-                           console.log("E-Invoice Clicked. Updating Flutter State with Ref: " + orderRef);
-                           window.flutter_inappwebview.callHandler('TransactionInfoHandler', orderRef, uuid);
-                       }
-                   } catch(e) {
-                       console.error("Error scraping on e-invoice click: " + e);
-                   }
-               });
-           }
-        }
-        setInterval(attachEInvoiceListener, 1000);
-
-      })();
-
+      // ============================================================
+      // 3. RECEIPT & E-INVOICE CODE
+      // ============================================================
       
+      document.body.addEventListener('click', function(e) {
+          
+      });
 
-[Image of DOM tree structure]
-
-
-           // Locate the specific button class
-           var btn = e.target.closest('.button.print');
-           
-           if (btn) {
-              var receiptContainer = document.querySelector('.pos-receipt');
-              
-              if (receiptContainer) {
-                 e.preventDefault(); 
-                 e.stopImmediatePropagation();
-
-                 var clone = receiptContainer.cloneNode(true);
-
-                 // FIX IMAGES
-                 var images = clone.querySelectorAll('img');
-                 var origin = window.location.origin; 
-                 images.forEach(function(img) {
-                    var src = img.getAttribute('src');
-                    if (src && src.startsWith('/')) {
-                        img.src = origin + src; 
-                    }
-                 });
-
-                 // EXTRACT REF
-                 var extractedRef = null;
-                 try {
-                     var text = receiptContainer.innerText || "";
-                     var match = text.match(/Order\\s*[:\\#]?\\s*([A-Za-z0-9\\-\\/]+)/i);
-                     if(match && match[1]) extractedRef = match[1].trim();
-                 } catch(err) {}
-
-                 var content = clone.outerHTML;
-
-                 // INJECT CSS: FULL WIDTH, NO 302px LIMIT
-                 var style = `
-                    <style>
-                        @import url('https://fonts.googleapis.com/css?family=Inconsolata:400,700&display=swap');
-                        
-                        body { 
-                           font-family: 'Inconsolata', monospace; 
-                           background: white; 
-                           color: black; 
-                           margin: 0; 
-                           padding: 20px;
-                           width: 100%; /* FULL WIDTH */
-                        }
-
-                        /* Bootstrap Utility Mimics for Odoo XML */
-                        .d-flex { display: flex; }
-                        .flex-column { flex-direction: column; }
-                        .justify-content-center { justify-content: center; }
-                        .align-items-center { align-items: center; }
-                        .text-center { text-align: center; }
-                        .text-end, .text-right { text-align: right; }
-                        .text-start, .text-left { text-align: left; }
-                        .fw-bold { font-weight: bold; }
-                        .fs-6 { font-size: 14px; }
-                        .mb-0 { margin-bottom: 0; }
-                        .ms-2 { margin-left: 0.5rem; }
-                        .w-100 { width: 100%; }
-                        
-                        /* Receipt Container Logic */
-                        .pos-receipt { 
-                            padding: 5px; 
-                            width: 100%; /* Stretch to fit page */
-                            box-sizing: border-box;
-                        }
-                        
-                        img { max-width: 100%; height: auto; }
-                        .card { border: none; width: 100%; } 
-                        .card-body { padding: 0; }
-                        
-                        /* Table Styling - Essential for full width */
-                        table { width: 100% !important; border-collapse: collapse; }
-                        td, th { vertical-align: top; padding: 2px 0; font-size: 12px; }
-                        
-                        .receipt-orderlines { 
-                             border-style: double; 
-                             border-left: none; 
-                             border-right: none; 
-                             border-bottom: none; 
-                             width: 100%; 
-                             margin-top: 5px; 
-                        }
-                    </style>
-                 `;
-
-                 var fullHtml = '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">' + style + '</head><body><div class="pos-receipt">' + content + '</div></body></html>';
-                 
-                 window.flutter_inappwebview.callHandler('PrintPosReceipt', fullHtml, extractedRef);
-                 return false; 
-              }
-           }
-        }, true);
-      })();
-    """;
-    await controller.evaluateJavascript(source: script);
+  })();
+  """;
+  await controller.evaluateJavascript(source: script);
   }
 }
