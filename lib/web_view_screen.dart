@@ -79,13 +79,14 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     _initPermissionsAndNotifications();
 
     // V6: PullToRefreshController uses a simpler settings object
-    _pullToRefreshController = PullToRefreshController(
+      _pullToRefreshController = PullToRefreshController(
       settings: PullToRefreshSettings(
         color: Colors.blue,
       ),
       onRefresh: () async {
         if (Platform.isAndroid) {
-          _webViewController?.reload();
+          _webViewController?.loadUrl(
+              urlRequest: URLRequest(url: await _webViewController?.getUrl()));
         } else if (Platform.isIOS) {
           _webViewController?.loadUrl(
               urlRequest: URLRequest(url: await _webViewController?.getUrl()));
