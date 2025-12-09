@@ -115,5 +115,6 @@ configurations.all {
     resolutionStrategy {
         // This is a non-negotiable command to Gradle.
         force("com.google.android.gms:play-services-basement:18.4.0")
+        force ("androidx.activity:activity:1.9.3")
     }
 }
