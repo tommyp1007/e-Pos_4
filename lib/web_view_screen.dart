@@ -18,6 +18,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:image_picker/image_picker.dart';
 
 // --- LOCAL SCREENS ---
 import 'pdf_viewer_screen.dart';
@@ -34,24 +35,20 @@ class WebViewScreen extends StatefulWidget {
 class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserver {
   
   // ===========================================================================
-  // MARK: - STATE VARIABLES & CONTROLLERS
+  // MARK: - STATE VARIABLES
   // ===========================================================================
   
-  // Controllers
   InAppWebViewController? _webViewController;
   late PullToRefreshController _pullToRefreshController;
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 
-  // State
   bool _isLoading = true;
   bool _isTablet = false;
-  late String _appHost; // To store the domain of your Odoo instance
+  late String _appHost; 
 
-  // Odoo Scraped Data
   String? _currentOrderRef;
   String? _currentUuid;
 
-  // Scripts
   final UserScript _apiDisablerScript = UserScript(
     source: """
       window.BarcodeDetector = class BarcodeDetector {
@@ -72,7 +69,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     
-    // Extract the host (domain) from the initial URL to distinguish internal vs external links
     try {
       final uri = Uri.parse(widget.url);
       _appHost = uri.host; 
@@ -82,8 +78,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
     _initPermissionsAndNotifications();
 
+    // V6: PullToRefreshController uses a simpler settings object
     _pullToRefreshController = PullToRefreshController(
-      options: PullToRefreshOptions(color: Colors.blue),
+      settings: PullToRefreshSettings(
+        color: Colors.blue,
+      ),
       onRefresh: () async {
         if (Platform.isAndroid) {
           _webViewController?.reload();
@@ -159,64 +158,52 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     initialUserScripts: UnmodifiableListView<UserScript>([
                       _apiDisablerScript,
                     ]),
-                    initialOptions: InAppWebViewGroupOptions(
-                      crossPlatform: InAppWebViewOptions(
+                    
+                    // --- V6 UPDATE: Use 'initialSettings' instead of 'initialOptions' ---
+                    initialSettings: InAppWebViewSettings(
+                        // Cross-platform
                         javaScriptEnabled: true,
                         mediaPlaybackRequiresUserGesture: false,
                         useOnDownloadStart: true,
                         userAgent: userAgent,
-                        // Important: Enable this to allow capturing standard link clicks
-                        useShouldOverrideUrlLoading: true, 
-                      ),
-                      android: AndroidInAppWebViewOptions(
+                        useShouldOverrideUrlLoading: true,
+                        
+                        // Android specific
                         useHybridComposition: true,
-                        // Important: Enable this to capture "target='_blank'" popups
-                        supportMultipleWindows: true, 
-                        mixedContentMode: AndroidMixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
-                      ),
-                      ios: IOSInAppWebViewOptions(
+                        supportMultipleWindows: true,
+                        mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+                        
+                        // iOS specific
                         allowsInlineMediaPlayback: true,
                         disallowOverScroll: true,
                         sharedCookiesEnabled: true,
-                      ),
                     ),
+
                     pullToRefreshController: _pullToRefreshController,
-                    
-                    // -----------------------------------------------------------
-                    // 1. HANDLE "POPUP" WINDOWS (target="_blank")
-                    // This catches the "Blocking popup window creation" error.
-                    // -----------------------------------------------------------
+
+                    // --- HANDLE POPUPS ---
                     onCreateWindow: (controller, createWindowRequest) async {
                       final Uri? url = createWindowRequest.request.url;
                       if (url != null) {
-                         // Always open popups in external browser
                          await _launchExternal(url);
-                         return true; // We handled it
+                         return true; 
                       }
                       return false;
                     },
 
-                    // -----------------------------------------------------------
-                    // 2. HANDLE STANDARD LINKS (Same tab navigation)
-                    // Checks if URL belongs to Odoo or is external.
-                    // -----------------------------------------------------------
+                    // --- HANDLE EXTERNAL LINKS ---
                     shouldOverrideUrlLoading: (controller, navigationAction) async {
                       var uri = navigationAction.request.url!;
 
-                      // Check 1: Is it a common deep link scheme?
                       if (!["http", "https", "file", "chrome", "data", "javascript", "about"].contains(uri.scheme)) {
-                         // Allow external apps (like tel:, mailto:, sms:) to handle it
                          return NavigationActionPolicy.ALLOW; 
                       }
 
-                      // Check 2: Is the host different from our App's Host?
-                      // If yes, it's an external link (like hasil.gov.my) -> Open in Chrome
                       if (_appHost.isNotEmpty && uri.host.isNotEmpty && uri.host != _appHost) {
                          await _launchExternal(uri);
-                         return NavigationActionPolicy.CANCEL; // Stop WebView from loading it
+                         return NavigationActionPolicy.CANCEL; 
                       }
 
-                      // Otherwise, it's an internal Odoo link -> Load inside WebView
                       return NavigationActionPolicy.ALLOW;
                     },
 
@@ -260,6 +247,119 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   // ===========================================================================
+  // MARK: - CAMERA & FILE UPLOAD LOGIC (V6 COMPATIBLE)
+  // ===========================================================================
+
+  // V6 expects Future<List<String>?> as return type
+  // Used 'dynamic' for request to ensure compatibility with imports
+  Future<List<String>?> _handleAndroidFileUpload(dynamic request) async {
+    final ImageSource? source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(16),
+        height: 150,
+        child: Column(
+          children: [
+            const Text("Select Image Source", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildSourceButton(Icons.camera_alt, "Camera", ImageSource.camera),
+                _buildSourceButton(Icons.photo_library, "Gallery", ImageSource.gallery),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (source == null) return null; 
+
+    final ImagePicker picker = ImagePicker();
+    final XFile? photo = await picker.pickImage(source: source);
+
+    if (photo == null) return null;
+
+    File imageFile = File(photo.path);
+
+    if (source == ImageSource.camera) {
+      bool confirmed = await _showImagePreviewDialog(imageFile);
+      if (!confirmed) return null;
+      await _saveImageToGallery(imageFile);
+    }
+
+    // V6 requires Strings, not URIs
+    return [Uri.file(imageFile.path).toString()];
+  }
+
+  Widget _buildSourceButton(IconData icon, String label, ImageSource source) {
+    return InkWell(
+      onTap: () => Navigator.pop(context, source),
+      child: Column(
+        children: [
+          Icon(icon, size: 40, color: Colors.blue),
+          const SizedBox(height: 8),
+          Text(label),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _showImagePreviewDialog(File imageFile) async {
+    return await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text("Preview Photo"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.file(imageFile, height: 250, fit: BoxFit.cover),
+            const SizedBox(height: 10),
+            const Text("Upload this photo?"),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false), 
+            child: const Text("Retake/Cancel", style: TextStyle(color: Colors.red)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Upload"),
+          ),
+        ],
+      ),
+    ) ?? false;
+  }
+
+  Future<void> _saveImageToGallery(File sourceFile) async {
+    try {
+      String path = await ExternalPath.getExternalStoragePublicDirectory(ExternalPath.DIRECTORY_PICTURES);
+      String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      String newPath = '$path/Odoo_Snap_$timestamp.jpg';
+      
+      await sourceFile.copy(newPath);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+           SnackBar(content: Text("Saved to Gallery: $newPath")),
+        );
+      }
+    } catch (e) {
+      log("Error saving to gallery: $e");
+      try {
+         String path = await ExternalPath.getExternalStoragePublicDirectory(ExternalPath.DIRECTORY_DOWNLOAD);
+         String newPath = '$path/Odoo_Snap_${DateTime.now().millisecondsSinceEpoch}.jpg';
+         await sourceFile.copy(newPath);
+      } catch (e2) {
+         log("Fallback save failed: $e2");
+      }
+    }
+  }
+
+  // ===========================================================================
   // MARK: - NAVIGATION HELPER
   // ===========================================================================
   
@@ -280,7 +380,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   // ===========================================================================
 
   void _registerJavaScriptHandlers(InAppWebViewController controller) {
-    // 1. Transaction Info Handler
     controller.addJavaScriptHandler(
       handlerName: 'TransactionInfoHandler',
       callback: (args) {
@@ -300,7 +399,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       },
     );
 
-    // 2. Native QR Scanner Handler
     controller.addJavaScriptHandler(
       handlerName: 'NativeQRScanner',
       callback: (args) async {
@@ -318,7 +416,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       },
     );
 
-    // 3. Blob Downloader Handler
     controller.addJavaScriptHandler(
       handlerName: 'BlobDownloader',
       callback: (args) async {
@@ -331,7 +428,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       },
     );
 
-    // 4. POS Receipt Print Handler
     controller.addJavaScriptHandler(
       handlerName: 'PrintPosReceipt',
       callback: (args) async {
@@ -646,78 +742,114 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   // ===========================================================================
 
   Future<void> _injectCustomJavaScript(InAppWebViewController controller) async {
+    // Note: This script performs DOM manipulation to:
+    // 1. Scrape Transaction/UUID
+    // 2. Hijack Barcode/Scanner inputs
+    // 3. Hijack Buttons for native features
+    // 4. E-Invoice Listener
+    // 5. Print Receipt Hijacking
+
     String script = """
     (function() {
       console.log("Injecting Odoo Mobile Hooks...");
 
+      // ============================================================
       // 1. BARCODE INPUT HANDLER
+      // Purpose: This is the function Flutter calls when YOU scan a barcode with the native camera.
+      // It takes that code and tries to "type" it into Odoo's search bars automatically.
+      // ============================================================
       window.onFlutterBarcodeScanned = function(code) {
-          console.log("Received barcode: " + code);
-          
-          var partnerSearchInput = document.querySelector('input[placeholder="Search Customers..."]') || document.querySelector('.sb-partner input');
-          if (partnerSearchInput && partnerSearchInput.offsetParent !== null) {
-            partnerSearchInput.setAttribute('inputmode', 'none'); 
-            partnerSearchInput.focus();
-            partnerSearchInput.value = code;
-            partnerSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
-            partnerSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
-            partnerSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-            partnerSearchInput.blur();
-            setTimeout(() => { partnerSearchInput.removeAttribute('inputmode'); }, 200);
-            return;
-          }
+         console.log("Received barcode: " + code);
+         
+         // --- LOGIC A: Customer Search (POS) ---
+         // If the "Search Customers" modal is open, type the barcode there.
+         var partnerSearchInput = document.querySelector('input[placeholder="Search Customers..."]') || document.querySelector('.sb-partner input');
+         if (partnerSearchInput && partnerSearchInput.offsetParent !== null) {
+           partnerSearchInput.setAttribute('inputmode', 'none'); // Prevent keyboard from popping up
+           partnerSearchInput.focus();
+           partnerSearchInput.value = code;
+           
+           // We must dispatch these events so Odoo's Javascript framework (Owl) detects the change
+           partnerSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
+           partnerSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
+           partnerSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
+           
+           partnerSearchInput.blur();
+           setTimeout(() => { partnerSearchInput.removeAttribute('inputmode'); }, 200);
+           return;
+         }
 
-          var productSearchInput = document.querySelector('input[placeholder="Search products..."]') || document.querySelector('input[placeholder="Carian produk..."]') || document.querySelector('.products-widget-control input');
-          if (productSearchInput && productSearchInput.offsetParent !== null) {
-            productSearchInput.setAttribute('inputmode', 'none');
-            productSearchInput.focus();
-            productSearchInput.value = code;
-            productSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
-            productSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
-            productSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-            productSearchInput.blur();
-            setTimeout(() => { productSearchInput.removeAttribute('inputmode'); }, 200);
-            
-            setTimeout(function() {
-                var plusIcon = document.querySelector('#qty_btn_product .fa-plus');
-                if (plusIcon && plusIcon.closest('a')) {
-                  plusIcon.closest('a').click();
-                } else {
-                  var firstProduct = document.querySelector('article.product');
-                  if (firstProduct) firstProduct.click();
-                }
-            }, 700);
-            return;
-          }
+         // --- LOGIC B: Product Search (POS) ---
+         // If we are on the main POS screen, type into the product search bar.
+         var productSearchInput = document.querySelector('input[placeholder="Search products..."]') || document.querySelector('input[placeholder="Carian produk..."]') || document.querySelector('.products-widget-control input');
+         if (productSearchInput && productSearchInput.offsetParent !== null) {
+           productSearchInput.setAttribute('inputmode', 'none');
+           productSearchInput.focus();
+           productSearchInput.value = code;
+           
+           // Trigger Odoo to filter products
+           productSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
+           productSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
+           productSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
+           productSearchInput.blur();
+           setTimeout(() => { productSearchInput.removeAttribute('inputmode'); }, 200);
+           
+           // Special Trick: After scanning, try to automatically click the "Add" (+) button 
+           // or select the first product that appears.
+           setTimeout(function() {
+               var plusIcon = document.querySelector('#qty_btn_product .fa-plus');
+               if (plusIcon && plusIcon.closest('a')) {
+                 plusIcon.closest('a').click();
+               } else {
+                 var firstProduct = document.querySelector('article.product');
+                 if (firstProduct) firstProduct.click();
+               }
+           }, 700);
+           return;
+         }
 
-          window.dispatchEvent(new CustomEvent('barcode_scanned', { detail: code }));
-          var target = document.activeElement || document.body;
-          
-          if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-            target.setAttribute('inputmode', 'none');
-            target.value = code;
-            target.dispatchEvent(new Event('change', { bubbles: true }));
-            target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-            target.blur();
-            setTimeout(() => { target.removeAttribute('inputmode'); }, 200);
-          } else {
-            for (var i = 0; i < code.length; i++) {
-                document.body.dispatchEvent(new KeyboardEvent('keypress', { key: code[i], char: code[i], bubbles: true }));
-            }
-            document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-          }
+         // --- LOGIC C: Fallback (Inventory/Generic) ---
+         // If we aren't in POS, simulate raw keyboard presses. 
+         // This works for Barcode Action forms in Inventory.
+         window.dispatchEvent(new CustomEvent('barcode_scanned', { detail: code }));
+         var target = document.activeElement || document.body;
+         
+         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+           // Standard Input typing
+           target.setAttribute('inputmode', 'none');
+           target.value = code;
+           target.dispatchEvent(new Event('change', { bubbles: true }));
+           target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+           target.blur();
+           setTimeout(() => { target.removeAttribute('inputmode'); }, 200);
+         } else {
+           // Raw Keypress simulation (for Odoo's global listener)
+           for (var i = 0; i < code.length; i++) {
+               document.body.dispatchEvent(new KeyboardEvent('keypress', { key: code[i], char: code[i], bubbles: true }));
+           }
+           document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+         }
       };
 
-      // 2. CAMERA HIJACKER
+      // ============================================================
+      // 2. CAMERA HIJACKER (Button Replacement)
+      // ============================================================
       function hijackButtons() {
           var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode'];
 
           selectors.forEach(function(sel) {
               var elements = document.querySelectorAll(sel);
               elements.forEach(function(el) {
+                  // Find the actual button container
                   var btn = el.closest('button') || el.closest('.btn') || el;
+
+                  // Check if we already hijacked it
                   if (btn && !btn.getAttribute('data-flutter-hijacked')) {
                       btn.setAttribute('data-flutter-hijacked', 'true');
+
+                      // REMOVED: btn.style.border = "2px solid red";  <-- This was making the red box
+
+                      // Add Capture Phase Listener (Trigger Native Scanner)
                       btn.addEventListener('click', function(e) {
                           e.preventDefault();
                           e.stopPropagation();
@@ -729,11 +861,20 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
           });
       }
 
+      // Run immediately and every 1s to catch new buttons
       hijackButtons();
       setInterval(hijackButtons, 1000);
 
-    })();
-    """;
-    await controller.evaluateJavascript(source: script);
+      // ============================================================
+      // 3. RECEIPT & E-INVOICE CODE
+      // ============================================================
+      
+      document.body.addEventListener('click', function(e) {
+          
+      });
+
+  })();
+  """;
+  await controller.evaluateJavascript(source: script);
   }
 }
