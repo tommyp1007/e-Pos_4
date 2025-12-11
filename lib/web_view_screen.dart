@@ -18,11 +18,11 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:image_picker/image_picker.dart';
 
 // --- LOCAL SCREENS ---
-import 'pdf_viewer_screen.dart';
-import 'qr_scanner_screen.dart';
+import 'package:epos/pdf_viewer_screen.dart';
+import 'package:epos/qr_scanner_screen.dart';
+import 'package:epos/camera_access.dart'; 
 
 class WebViewScreen extends StatefulWidget {
   final String url;
@@ -35,20 +35,23 @@ class WebViewScreen extends StatefulWidget {
 class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserver {
   
   // ===========================================================================
-  // MARK: - STATE VARIABLES
+  // MARK: - STATE VARIABLES & CONTROLLERS
   // ===========================================================================
   
+  // Controllers
   InAppWebViewController? _webViewController;
   late PullToRefreshController _pullToRefreshController;
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 
+  // State
   bool _isLoading = true;
   bool _isTablet = false;
-  late String _appHost; 
 
+  // Odoo Scraped Data
   String? _currentOrderRef;
   String? _currentUuid;
 
+  // Scripts
   final UserScript _apiDisablerScript = UserScript(
     source: """
       window.BarcodeDetector = class BarcodeDetector {
@@ -68,25 +71,13 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    
-    try {
-      final uri = Uri.parse(widget.url);
-      _appHost = uri.host; 
-    } catch (e) {
-      _appHost = "";
-    }
-
     _initPermissionsAndNotifications();
 
-    // V6: PullToRefreshController uses a simpler settings object
-      _pullToRefreshController = PullToRefreshController(
-      settings: PullToRefreshSettings(
-        color: Colors.blue,
-      ),
+    _pullToRefreshController = PullToRefreshController(
+      options: PullToRefreshOptions(color: Colors.blue),
       onRefresh: () async {
         if (Platform.isAndroid) {
-          _webViewController?.loadUrl(
-              urlRequest: URLRequest(url: await _webViewController?.getUrl()));
+          _webViewController?.reload();
         } else if (Platform.isIOS) {
           _webViewController?.loadUrl(
               urlRequest: URLRequest(url: await _webViewController?.getUrl()));
@@ -128,6 +119,39 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         ? "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
         : "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36";
 
+    // Define options here so they can be reused by Parent and Child windows
+    final InAppWebViewGroupOptions commonWebViewOptions = InAppWebViewGroupOptions(
+      crossPlatform: InAppWebViewOptions(
+        javaScriptEnabled: true,
+        mediaPlaybackRequiresUserGesture: false,
+        useOnDownloadStart: true,
+        userAgent: userAgent,
+        // <<< UPDATED: CRITICAL SETTINGS FROM YOUR INPUT >>>
+        allowFileAccessFromFileURLs: true,
+        allowUniversalAccessFromFileURLs: true,
+        javaScriptCanOpenWindowsAutomatically: true, 
+      ),
+      android: AndroidInAppWebViewOptions(
+        useHybridComposition: true,
+        supportMultipleWindows: true, // IMPORTANT: Must be true for onCreateWindow to work
+        mixedContentMode: AndroidMixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+        // <<< UPDATED: ENABLE FILE & CONTENT ACCESS >>>
+        allowContentAccess: true,
+        allowFileAccess: true,
+        databaseEnabled: true,
+        domStorageEnabled: true,
+        saveFormData: true,
+        thirdPartyCookiesEnabled: true,
+      ),
+      ios: IOSInAppWebViewOptions(
+        allowsInlineMediaPlayback: true,
+        disallowOverScroll: true,
+        sharedCookiesEnabled: true,
+        // <<< UPDATED: IOS SETTINGS >>>
+        allowsPictureInPictureMediaPlayback: true,
+      ),
+    );
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: const SystemUiOverlayStyle(
         statusBarColor: Colors.white,
@@ -159,55 +183,96 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     initialUserScripts: UnmodifiableListView<UserScript>([
                       _apiDisablerScript,
                     ]),
-                    
-                    // --- V6 UPDATE: Use 'initialSettings' instead of 'initialOptions' ---
-                    initialSettings: InAppWebViewSettings(
-                        // Cross-platform
-                        javaScriptEnabled: true,
-                        mediaPlaybackRequiresUserGesture: false,
-                        useOnDownloadStart: true,
-                        userAgent: userAgent,
-                        useShouldOverrideUrlLoading: true,
-                        
-                        // Android specific
-                        useHybridComposition: true,
-                        supportMultipleWindows: true,
-                        mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
-                        
-                        // iOS specific
-                        allowsInlineMediaPlayback: true,
-                        disallowOverScroll: true,
-                        sharedCookiesEnabled: true,
-                    ),
-
+                    initialOptions: commonWebViewOptions,
                     pullToRefreshController: _pullToRefreshController,
 
-                    // --- HANDLE POPUPS ---
+                    // [REMOVED] onShowFileChooser to fix the error.
+                    // If you need file uploading later, we will use the JavaScript Hijacker method instead.
+
+                    // =========================================================
+                    // 1. POPUP HANDLING (Child Window / External Link)
+                    // =========================================================
                     onCreateWindow: (controller, createWindowRequest) async {
-                      final Uri? url = createWindowRequest.request.url;
-                      if (url != null) {
-                         await _launchExternal(url);
-                         return true; 
+                      // A. iOS: Open standard links in external browser (Safari)
+                      if (Platform.isIOS) {
+                        var urlToOpen = createWindowRequest.request.url;
+                        if (urlToOpen != null) {
+                          await launchUrl(urlToOpen, mode: LaunchMode.externalApplication);
+                          return true; 
+                        }
                       }
-                      return false;
+
+                      // B. Android/Tablet: Open internal responsive dialog
+                      showDialog(
+                        context: context,
+                        builder: (context) {
+                          // Calculate responsive size (95% of screen)
+                          final Size screenSize = MediaQuery.of(context).size;
+                          final double dialogWidth = screenSize.width * 0.95;
+                          final double dialogHeight = screenSize.height * 0.95;
+
+                          return Dialog(
+                            insetPadding: EdgeInsets.zero,
+                            backgroundColor: Colors.transparent,
+                            child: Container(
+                              width: dialogWidth,
+                              height: dialogHeight,
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                boxShadow: [
+                                  const BoxShadow(color: Colors.black26, blurRadius: 10, spreadRadius: 2)
+                                ]
+                              ),
+                              child: Column(
+                                children: [
+                                  // Header
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                    decoration: const BoxDecoration(
+                                      color: Color(0xFFF5F5F5),
+                                      borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+                                      border: Border(bottom: BorderSide(color: Colors.black12))
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Text("External View", style: TextStyle(fontWeight: FontWeight.bold)),
+                                        InkWell(
+                                          onTap: () => Navigator.pop(context),
+                                          child: const Padding(
+                                            padding: EdgeInsets.all(4.0),
+                                            child: Icon(Icons.close, color: Colors.black54),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  // Child WebView
+                                  Expanded(
+                                    child: ClipRRect(
+                                      borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                                      child: InAppWebView(
+                                        windowId: createWindowRequest.windowId,
+                                        initialOptions: commonWebViewOptions,
+                                        onCloseWindow: (controller) {
+                                          if (Navigator.canPop(context)) Navigator.pop(context);
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      );
+                      return true; // We handled the window creation
                     },
 
-                    // --- HANDLE EXTERNAL LINKS ---
-                    shouldOverrideUrlLoading: (controller, navigationAction) async {
-                      var uri = navigationAction.request.url!;
-
-                      if (!["http", "https", "file", "chrome", "data", "javascript", "about"].contains(uri.scheme)) {
-                         return NavigationActionPolicy.ALLOW; 
-                      }
-
-                      if (_appHost.isNotEmpty && uri.host.isNotEmpty && uri.host != _appHost) {
-                         await _launchExternal(uri);
-                         return NavigationActionPolicy.CANCEL; 
-                      }
-
-                      return NavigationActionPolicy.ALLOW;
-                    },
-
+                    // =========================================================
+                    // 2. OTHER HANDLERS
+                    // =========================================================
                     onWebViewCreated: (controller) {
                       _webViewController = controller;
                       _registerJavaScriptHandlers(controller);
@@ -218,11 +283,13 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                       setState(() => _isLoading = false);
                     },
                     onPermissionRequest: (controller, request) async {
+                      // Block Camera to stop Odoo from crashing, 
+                      // or Grant it if you use a different camera handler.
                       if (request.resources.contains(PermissionResourceType.CAMERA)) {
                         return PermissionResponse(
                           resources: request.resources,
                           action: PermissionResponseAction.DENY, 
-                          );
+                        );
                       }
                       return PermissionResponse(
                         resources: request.resources,
@@ -248,139 +315,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   // ===========================================================================
-  // MARK: - CAMERA & FILE UPLOAD LOGIC (V6 COMPATIBLE)
-  // ===========================================================================
-
-  // V6 expects Future<List<String>?> as return type
-  // Used 'dynamic' for request to ensure compatibility with imports
-  Future<List<String>?> _handleAndroidFileUpload(dynamic request) async {
-    final ImageSource? source = await showModalBottomSheet<ImageSource>(
-      context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(16),
-        height: 150,
-        child: Column(
-          children: [
-            const Text("Select Image Source", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                _buildSourceButton(Icons.camera_alt, "Camera", ImageSource.camera),
-                _buildSourceButton(Icons.photo_library, "Gallery", ImageSource.gallery),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-
-    if (source == null) return null; 
-
-    final ImagePicker picker = ImagePicker();
-    final XFile? photo = await picker.pickImage(source: source);
-
-    if (photo == null) return null;
-
-    File imageFile = File(photo.path);
-
-    if (source == ImageSource.camera) {
-      bool confirmed = await _showImagePreviewDialog(imageFile);
-      if (!confirmed) return null;
-      await _saveImageToGallery(imageFile);
-    }
-
-    // V6 requires Strings, not URIs
-    return [Uri.file(imageFile.path).toString()];
-  }
-
-  Widget _buildSourceButton(IconData icon, String label, ImageSource source) {
-    return InkWell(
-      onTap: () => Navigator.pop(context, source),
-      child: Column(
-        children: [
-          Icon(icon, size: 40, color: Colors.blue),
-          const SizedBox(height: 8),
-          Text(label),
-        ],
-      ),
-    );
-  }
-
-  Future<bool> _showImagePreviewDialog(File imageFile) async {
-    return await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text("Preview Photo"),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Image.file(imageFile, height: 250, fit: BoxFit.cover),
-            const SizedBox(height: 10),
-            const Text("Upload this photo?"),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false), 
-            child: const Text("Retake/Cancel", style: TextStyle(color: Colors.red)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text("Upload"),
-          ),
-        ],
-      ),
-    ) ?? false;
-  }
-
-  Future<void> _saveImageToGallery(File sourceFile) async {
-    try {
-      String path = await ExternalPath.getExternalStoragePublicDirectory(ExternalPath.DIRECTORY_PICTURES);
-      String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      String newPath = '$path/Odoo_Snap_$timestamp.jpg';
-      
-      await sourceFile.copy(newPath);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-           SnackBar(content: Text("Saved to Gallery: $newPath")),
-        );
-      }
-    } catch (e) {
-      log("Error saving to gallery: $e");
-      try {
-         String path = await ExternalPath.getExternalStoragePublicDirectory(ExternalPath.DIRECTORY_DOWNLOAD);
-         String newPath = '$path/Odoo_Snap_${DateTime.now().millisecondsSinceEpoch}.jpg';
-         await sourceFile.copy(newPath);
-      } catch (e2) {
-         log("Fallback save failed: $e2");
-      }
-    }
-  }
-
-  // ===========================================================================
-  // MARK: - NAVIGATION HELPER
-  // ===========================================================================
-  
-  Future<void> _launchExternal(Uri url) async {
-    try {
-      if (await canLaunchUrl(url)) {
-        await launchUrl(url, mode: LaunchMode.externalApplication);
-      } else {
-        log("Could not launch URL: $url");
-      }
-    } catch (e) {
-      log("Error launching URL: $e");
-    }
-  }
-
-  // ===========================================================================
   // MARK: - WEBVIEW HANDLERS SETUP
   // ===========================================================================
 
   void _registerJavaScriptHandlers(InAppWebViewController controller) {
+    // 1. Transaction Info Handler
     controller.addJavaScriptHandler(
       handlerName: 'TransactionInfoHandler',
       callback: (args) {
@@ -400,6 +339,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       },
     );
 
+    // 2. Native QR Scanner Handler
     controller.addJavaScriptHandler(
       handlerName: 'NativeQRScanner',
       callback: (args) async {
@@ -417,6 +357,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       },
     );
 
+    // 3. Blob Downloader Handler
     controller.addJavaScriptHandler(
       handlerName: 'BlobDownloader',
       callback: (args) async {
@@ -429,6 +370,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       },
     );
 
+    // 4. POS Receipt Print Handler
     controller.addJavaScriptHandler(
       handlerName: 'PrintPosReceipt',
       callback: (args) async {
@@ -738,7 +680,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     return "";
   }
 
-  // ===========================================================================
+   // ===========================================================================
   // MARK: - JAVASCRIPT INJECTION LOGIC
   // ===========================================================================
 

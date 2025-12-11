@@ -16,7 +16,7 @@ dependencies:
   external_path: ^2.2.0
   permission_handler: ^12.0.1
   connectivity_plus: ^7.0.0
-  device_info_plus: ^10.1.0
+  device_info_plus: ^12.3.0
 
   # Networking
   dio: ^5.5.0
@@ -35,7 +35,8 @@ dependencies:
   share_plus: ^12.0.1
   pdf: ^3.11.3
   flutter_launcher_icons: ^0.14.4
-  image_picker: ^1.0.4
+  image_picker: ^1.0.7
+  image_gallery_saver_plus: ^4.0.1
 
 dev_dependencies:
   flutter_test:

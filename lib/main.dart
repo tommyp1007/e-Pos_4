@@ -9,7 +9,8 @@ import 'package:flutter/services.dart';
 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
-import 'package:epos/urls.dart';
+// Make sure these paths match your project structure
+import 'package:epos/urls.dart'; 
 import 'package:epos/web_view_screen.dart';
 
 // Global Key
@@ -52,7 +53,6 @@ class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
-    // No external share listener needed
   }
 
   @override
