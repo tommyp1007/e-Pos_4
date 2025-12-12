@@ -9,9 +9,9 @@ import 'package:flutter/services.dart';
 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
-// Make sure these paths match your project structure
-import 'package:epos/urls.dart'; 
+// Ensure these point to your actual file locations
 import 'package:epos/web_view_screen.dart';
+import 'package:epos/urls.dart';
 
 // Global Key
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -79,6 +79,7 @@ class _MyAppState extends State<MyApp> {
           PointerDeviceKind.unknown,
         },
       ),
+      // Pointing to your PreProd URL
       home: const WebViewScreen(url: ApiUrls.preProd),
     );
   }
