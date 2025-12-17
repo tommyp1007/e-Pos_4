@@ -69,11 +69,9 @@
     <application
         android:label="e-Pos Pilot"
         android:name="${applicationName}"
-        android:usesCleartextTraffic="true"
         android:icon="@mipmap/launcher_icon"
-        android:requestLegacyExternalStorage="true">
-
-        <activity
+        android:requestLegacyExternalStorage="true"
+        android:usesCleartextTraffic="true">  <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"

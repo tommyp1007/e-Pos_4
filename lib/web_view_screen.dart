@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:ui' as ui; // REQUIRED: For detecting device language
+import 'dart:ui' as ui; 
 
 // --- PACKAGES ---
 import 'package:external_path/external_path.dart';
@@ -25,7 +25,6 @@ import 'package:url_launcher/url_launcher.dart';
 // --- LOCAL SCREENS ---
 import 'package:epos/pdf_viewer_screen.dart';
 import 'package:epos/qr_scanner_screen.dart';
-// import 'package:epos/camera_access.dart'; // Ensure this exists or remove if unused
 
 class WebViewScreen extends StatefulWidget {
   final String url;
@@ -100,7 +99,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     super.didChangeDependencies();
     _isTablet = MediaQuery.of(context).size.shortestSide > 600;
     
-    // Initialize options here to use userAgent based on tablet status
     final String userAgent = _isTablet
         ? "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
         : "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36";
@@ -116,9 +114,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         javaScriptCanOpenWindowsAutomatically: true, 
       ),
       android: AndroidInAppWebViewOptions(
-        // [FIX] Set to FALSE to prevent GPU/Gralloc memory crashes when opening popups
         useHybridComposition: false, 
-        supportMultipleWindows: true, // IMPORTANT: Must be true for onCreateWindow
+        supportMultipleWindows: true,
         mixedContentMode: AndroidMixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
         allowContentAccess: true,
         allowFileAccess: true,
@@ -230,16 +227,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     initialOptions: _commonWebViewOptions,
                     pullToRefreshController: _pullToRefreshController,
 
-                    // =========================================================
-                    // 1. POPUP HANDLING (Main Window -> Child)
-                    // =========================================================
                     onCreateWindow: (controller, createWindowRequest) async {
                       return _handlePopupWindow(context, createWindowRequest);
                     },
 
-                    // =========================================================
-                    // 2. OTHER HANDLERS
-                    // =========================================================
                     onWebViewCreated: (controller) {
                       _webViewController = controller;
                       _registerMainJavaScriptHandlers(controller);
@@ -275,14 +266,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   // ===========================================================================
-  // MARK: - POPUP HANDLING LOGIC (RECURSIVE)
+  // MARK: - POPUP HANDLING LOGIC
   // ===========================================================================
 
-  /// This function handles creating the "External View" Dialog.
-  /// It is used by the Main WebView AND the Child WebView (recursively)
-  /// to fix the "Outstanding popup window" error.
   Future<bool> _handlePopupWindow(BuildContext context, CreateWindowAction createWindowRequest) async {
-    // A. iOS: Open standard links in external browser (Safari)
     if (Platform.isIOS) {
       var urlToOpen = createWindowRequest.request.url;
       if (urlToOpen != null) {
@@ -291,7 +278,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       }
     }
 
-    // B. Android/Tablet: Open internal responsive dialog
     showDialog(
       context: context,
       builder: (context) {
@@ -314,7 +300,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             ),
             child: Column(
               children: [
-                // Header
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: const BoxDecoration(
@@ -336,26 +321,18 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     ],
                   ),
                 ),
-                // Child WebView
                 Expanded(
                   child: ClipRRect(
                     borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
                     child: InAppWebView(
                       windowId: createWindowRequest.windowId,
                       initialOptions: _commonWebViewOptions,
-                      
-                      // 1. RECURSIVE POPUP HANDLING (Child -> Grandchild)
-                      // This fixes the "Blocking popup" error when clicking downloads inside the popup
                       onCreateWindow: (childController, childRequest) async {
-                         return _handlePopupWindow(context, childRequest);
+                          return _handlePopupWindow(context, childRequest);
                       },
-
-                      // 2. DOWNLOAD HANDLING
                       onDownloadStartRequest: (childController, downloadRequest) {
                         _onDownloadStart(childController, downloadRequest);
                       },
-
-                      // 3. BLOB HANDLING
                       onWebViewCreated: (childController) {
                         childController.addJavaScriptHandler(
                           handlerName: 'BlobDownloader',
@@ -388,7 +365,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   // ===========================================================================
-  // MARK: - SHARED DOWNLOAD LOGIC (Parent & Child)
+  // MARK: - SHARED DOWNLOAD LOGIC
   // ===========================================================================
 
   Future<void> _onDownloadStart(InAppWebViewController controller, DownloadStartRequest downloadRequest) async {
@@ -425,13 +402,22 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       },
     );
 
-    // 2. Native QR Scanner Handler
+    // 2. Native QR Scanner Handler [HANDLES LANGUAGE]
     controller.addJavaScriptHandler(
       handlerName: 'NativeQRScanner',
       callback: (args) async {
+        
+        // --- READ LANGUAGE FROM JS ---
+        String lang = 'en_US'; 
+        if (args.isNotEmpty && args[0] != null) {
+          lang = args[0].toString();
+        }
+
         final String? qrData = await Navigator.push<String>(
           context,
-          MaterialPageRoute(builder: (context) => const QRScannerScreen()),
+          MaterialPageRoute(
+            builder: (context) => QRScannerScreen(language: lang), 
+          ),
         );
 
         if (qrData != null && qrData.isNotEmpty) {
@@ -443,7 +429,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       },
     );
 
-    // 3. Blob Downloader Handler (For Main Window)
+    // 3. Blob Downloader Handler
     controller.addJavaScriptHandler(
       handlerName: 'BlobDownloader',
       callback: (args) async {
@@ -557,7 +543,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         try {
           var response = await fetch('$blobUrl');
           var blob = await response.blob();
-           
+            
           var reader = new FileReader();
           reader.onloadend = function() {
             var base64data = reader.result;
@@ -586,9 +572,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   Future<void> _saveDataToFile(List<int> bytes, String mimeType, String? suggestedFileName) async {
     try {
       String timestamp = DateTime.now()
-          .toString()             
+          .toString()              
           .split('.')[0]          
-          .replaceAll(':', '-')   
+          .replaceAll(':', '-')    
           .replaceAll(' ', '_');  
 
       String fileName = suggestedFileName != null && suggestedFileName.isNotEmpty 
@@ -769,7 +755,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     await controller.evaluateJavascript(source: script);
   }
 
-  // [MAINTAINED] Your original logic remains exactly as you wanted
   Future<void> _injectCustomJavaScript(InAppWebViewController controller) async {
     // Note: This script performs DOM manipulation to:
     // 1. Scrape Transaction/UUID
@@ -788,80 +773,81 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       // It takes that code and tries to "type" it into Odoo's search bars automatically.
       // ============================================================
       window.onFlutterBarcodeScanned = function(code) {
-         console.log("Received barcode: " + code);
-         
-         // --- LOGIC A: Customer Search (POS) ---
-         // If the "Search Customers" modal is open, type the barcode there.
-         var partnerSearchInput = document.querySelector('input[placeholder="Search Customers..."]') || document.querySelector('.sb-partner input');
-         if (partnerSearchInput && partnerSearchInput.offsetParent !== null) {
-           partnerSearchInput.setAttribute('inputmode', 'none'); // Prevent keyboard from popping up
-           partnerSearchInput.focus();
-           partnerSearchInput.value = code;
-           
-           // We must dispatch these events so Odoo's Javascript framework (Owl) detects the change
-           partnerSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
-           partnerSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
-           partnerSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-           
-           partnerSearchInput.blur();
-           setTimeout(() => { partnerSearchInput.removeAttribute('inputmode'); }, 200);
-           return;
-         }
+          console.log("Received barcode: " + code);
+          
+          // --- LOGIC A: Customer Search (POS) ---
+          // If the "Search Customers" modal is open, type the barcode there.
+          var partnerSearchInput = document.querySelector('input[placeholder="Search Customers..."]') || document.querySelector('.sb-partner input');
+          if (partnerSearchInput && partnerSearchInput.offsetParent !== null) {
+            partnerSearchInput.setAttribute('inputmode', 'none'); // Prevent keyboard from popping up
+            partnerSearchInput.focus();
+            partnerSearchInput.value = code;
+            
+            // We must dispatch these events so Odoo's Javascript framework (Owl) detects the change
+            partnerSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
+            partnerSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
+            partnerSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
+            
+            partnerSearchInput.blur();
+            setTimeout(() => { partnerSearchInput.removeAttribute('inputmode'); }, 200);
+            return;
+          }
 
-         // --- LOGIC B: Product Search (POS) ---
-         // If we are on the main POS screen, type into the product search bar.
-         var productSearchInput = document.querySelector('input[placeholder="Search products..."]') || document.querySelector('input[placeholder="Carian produk..."]') || document.querySelector('.products-widget-control input');
-         if (productSearchInput && productSearchInput.offsetParent !== null) {
-           productSearchInput.setAttribute('inputmode', 'none');
-           productSearchInput.focus();
-           productSearchInput.value = code;
-           
-           // Trigger Odoo to filter products
-           productSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
-           productSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
-           productSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-           productSearchInput.blur();
-           setTimeout(() => { productSearchInput.removeAttribute('inputmode'); }, 200);
-           
-           // Special Trick: After scanning, try to automatically click the "Add" (+) button 
-           // or select the first product that appears.
-           setTimeout(function() {
-               var plusIcon = document.querySelector('#qty_btn_product .fa-plus');
-               if (plusIcon && plusIcon.closest('a')) {
-                 plusIcon.closest('a').click();
-               } else {
-                 var firstProduct = document.querySelector('article.product');
-                 if (firstProduct) firstProduct.click();
-               }
-           }, 700);
-           return;
-         }
+          // --- LOGIC B: Product Search (POS) ---
+          // If we are on the main POS screen, type into the product search bar.
+          // [UPDATED] Added 'Carian produk...' selector to ensure it works in Malay mode too
+          var productSearchInput = document.querySelector('input[placeholder="Search products..."]') || document.querySelector('input[placeholder="Carian produk..."]') || document.querySelector('.products-widget-control input');
+          if (productSearchInput && productSearchInput.offsetParent !== null) {
+            productSearchInput.setAttribute('inputmode', 'none');
+            productSearchInput.focus();
+            productSearchInput.value = code;
+            
+            // Trigger Odoo to filter products
+            productSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
+            productSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
+            productSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
+            productSearchInput.blur();
+            setTimeout(() => { productSearchInput.removeAttribute('inputmode'); }, 200);
+            
+            // Special Trick: After scanning, try to automatically click the "Add" (+) button 
+            // or select the first product that appears.
+            setTimeout(function() {
+                var plusIcon = document.querySelector('#qty_btn_product .fa-plus');
+                if (plusIcon && plusIcon.closest('a')) {
+                  plusIcon.closest('a').click();
+                } else {
+                  var firstProduct = document.querySelector('article.product');
+                  if (firstProduct) firstProduct.click();
+                }
+            }, 700);
+            return;
+          }
 
-         // --- LOGIC C: Fallback (Inventory/Generic) ---
-         // If we aren't in POS, simulate raw keyboard presses. 
-         // This works for Barcode Action forms in Inventory.
-         window.dispatchEvent(new CustomEvent('barcode_scanned', { detail: code }));
-         var target = document.activeElement || document.body;
-         
-         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-           // Standard Input typing
-           target.setAttribute('inputmode', 'none');
-           target.value = code;
-           target.dispatchEvent(new Event('change', { bubbles: true }));
-           target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-           target.blur();
-           setTimeout(() => { target.removeAttribute('inputmode'); }, 200);
-         } else {
-           // Raw Keypress simulation (for Odoo's global listener)
-           for (var i = 0; i < code.length; i++) {
-               document.body.dispatchEvent(new KeyboardEvent('keypress', { key: code[i], char: code[i], bubbles: true }));
-           }
-           document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-         }
+          // --- LOGIC C: Fallback (Inventory/Generic) ---
+          // If we aren't in POS, simulate raw keyboard presses. 
+          // This works for Barcode Action forms in Inventory.
+          window.dispatchEvent(new CustomEvent('barcode_scanned', { detail: code }));
+          var target = document.activeElement || document.body;
+          
+          if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+            // Standard Input typing
+            target.setAttribute('inputmode', 'none');
+            target.value = code;
+            target.dispatchEvent(new Event('change', { bubbles: true }));
+            target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+            target.blur();
+            setTimeout(() => { target.removeAttribute('inputmode'); }, 200);
+          } else {
+            // Raw Keypress simulation (for Odoo's global listener)
+            for (var i = 0; i < code.length; i++) {
+                document.body.dispatchEvent(new KeyboardEvent('keypress', { key: code[i], char: code[i], bubbles: true }));
+            }
+            document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+          }
       };
 
       // ============================================================
-      // 2. CAMERA HIJACKER (Button Replacement)
+      // 2. CAMERA HIJACKER (Button Replacement & Translation Logic)
       // ============================================================
       function hijackButtons() {
           var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode'];
@@ -871,19 +857,46 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               elements.forEach(function(el) {
                   // Find the actual button container
                   var btn = el.closest('button') || el.closest('.btn') || el;
+                  
+                  // [FIX] For your XML structure: the click listener is on the parent div of fa-barcode
+                  if(el.classList.contains('fa-barcode')) {
+                     var possibleParent = el.parentElement;
+                     // Check if parent has the specific Odoo click handler or just treat parent as button
+                     if(possibleParent) {
+                        btn = possibleParent;
+                     }
+                  }
 
                   // Check if we already hijacked it
                   if (btn && !btn.getAttribute('data-flutter-hijacked')) {
                       btn.setAttribute('data-flutter-hijacked', 'true');
-
-                      // REMOVED: btn.style.border = "2px solid red";  <-- This was making the red box
 
                       // Add Capture Phase Listener (Trigger Native Scanner)
                       btn.addEventListener('click', function(e) {
                           e.preventDefault();
                           e.stopPropagation();
                           e.stopImmediatePropagation();
-                          window.flutter_inappwebview.callHandler('NativeQRScanner');
+                          
+                          // [UPDATE START] TRANSLATION LOGIC -----------------------
+                          var currentLang = 'en_US'; // Default English
+                          
+                          // Check 1: Look for the Malay placeholder from your XML
+                          if (document.querySelector('input[placeholder="Carian produk..."]')) {
+                              currentLang = 'ms_MY';
+                          }
+                          // Check 2: Fallback to URL parameter
+                          else if (window.location.href.indexOf('lang=ms_MY') > -1) {
+                              currentLang = 'ms_MY';
+                          }
+                          // Check 3: Fallback to HTML lang tag
+                          else if (document.documentElement.lang.includes('ms')) {
+                              currentLang = 'ms_MY';
+                          }
+                          
+                          // Pass the detected language to Flutter
+                          window.flutter_inappwebview.callHandler('NativeQRScanner', currentLang);
+                          // [UPDATE END] -------------------------------------------
+                          
                       }, true); 
                   }
               });

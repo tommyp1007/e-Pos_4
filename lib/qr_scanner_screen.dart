@@ -10,7 +10,8 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class QRScannerScreen extends StatefulWidget {
-  const QRScannerScreen({super.key});
+  final String language; // Received from WebView
+  const QRScannerScreen({super.key, required this.language});
 
   @override
   State<QRScannerScreen> createState() => _QRScannerScreenState();
@@ -32,22 +33,20 @@ class _QRScannerScreenState extends State<QRScannerScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    
+    log("QR Scanner initialized with language: ${widget.language}");
 
     _animationController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
 
-    // --- MATCHING ODOO ZXING FORMATS ---
-    // Odoo supports: Aztec, Code 39, Code 128, Data Matrix, EAN 8, EAN 13, 
-    // ITF, PDF417, QR Code, UPC A, UPC E.
     _scannerController = MobileScannerController(
       facing: CameraFacing.back,
       torchEnabled: false,
       detectionSpeed: DetectionSpeed.noDuplicates, 
       returnImage: false,
       autoStart: false, 
-      // We explicitly list all formats Odoo supports to ensure product barcodes (EAN/UPC) work
       formats: [
         BarcodeFormat.aztec,
         BarcodeFormat.code128,
@@ -60,7 +59,6 @@ class _QRScannerScreenState extends State<QRScannerScreen>
         BarcodeFormat.qrCode,
         BarcodeFormat.upcA,
         BarcodeFormat.upcE,
-        // Adding codabar and code93 just in case, though not strictly in Odoo's default list
         BarcodeFormat.codabar,
         BarcodeFormat.code93,
       ],
@@ -145,14 +143,12 @@ class _QRScannerScreenState extends State<QRScannerScreen>
     final barcodes = capture.barcodes;
     if (barcodes.isEmpty) return;
 
-    // We take the first valid code found
     final String? code = barcodes.first.rawValue;
     
     if (code != null && code.isNotEmpty) {
        HapticFeedback.heavyImpact();
        setState(() => _isScanCompleted = true);
        log("Barcode/QR Detected: $code");
-       // RETURN THE CODE TO WEBVIEW SCREEN
        Navigator.pop(context, code);
     }
   }
@@ -180,6 +176,10 @@ class _QRScannerScreenState extends State<QRScannerScreen>
       );
     }
 
+    // --- LOGIC TO CHANGE TEXT BASED ON LANGUAGE ---
+    final bool isMalay = widget.language.trim() == 'ms_MY';
+    final String scanText = isMalay ? "Imbas Kod QR atau Kod Bar" : "Scan QR or Barcode";
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -200,7 +200,7 @@ class _QRScannerScreenState extends State<QRScannerScreen>
               );
             },
           ),
-          QRScannerOverlay(overlayColour: Colors.black.withOpacity(0.6), animationController: _animationController),
+          QRScannerOverlay(overlayColour: Colors.black.withOpacity(0.6), animationController: _animationController, scanText: scanText),
           SafeArea(
             child: Align(
               alignment: Alignment.topLeft,
@@ -255,15 +255,15 @@ class _QRScannerScreenState extends State<QRScannerScreen>
 }
 
 class QRScannerOverlay extends StatelessWidget {
-  const QRScannerOverlay({super.key, required this.overlayColour, required this.animationController});
+  const QRScannerOverlay({super.key, required this.overlayColour, required this.animationController, required this.scanText});
   final Color overlayColour;
   final AnimationController animationController;
+  final String scanText;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Just like Odoo's crop box, we define a scanning area
         double scanArea = math.min(constraints.maxWidth, constraints.maxHeight) * 0.70;
         if (scanArea > 350) scanArea = 350;
 
@@ -293,13 +293,12 @@ class QRScannerOverlay extends StatelessWidget {
                 ),
               ),
             ),
-            // Text hint similar to typical scanners
             Align(
               alignment: Alignment.bottomCenter,
               child: Padding(
                 padding: const EdgeInsets.only(bottom: 100.0),
                 child: Text(
-                  "Scan QR or Barcode",
+                  scanText,
                   style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 16),
                 ),
               ),
