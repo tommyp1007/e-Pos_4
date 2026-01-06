@@ -2,11 +2,11 @@
 
 import 'dart:async';
 import 'dart:collection';
-import 'dart:convert';
+import 'dart:convert'; // Required for base64Decode
 import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:ui' as ui; 
+import 'dart:ui' as ui;
 
 // --- PACKAGES ---
 import 'package:external_path/external_path.dart';
@@ -24,7 +24,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 // --- LOCAL SCREENS ---
 import 'package:epos/pdf_viewer_screen.dart';
-import 'package:epos/qr_scanner_screen.dart';
+import 'package:epos/qr_scanner_screen.dart';     // For Product Scanning
 
 class WebViewScreen extends StatefulWidget {
   final String url;
@@ -40,33 +40,36 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   // MARK: - STATE VARIABLES & CONTROLLERS
   // ===========================================================================
   
-  // Controllers
   InAppWebViewController? _webViewController;
   late PullToRefreshController _pullToRefreshController;
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
   
-  // Cookie Manager
   final CookieManager _cookieManager = CookieManager.instance();
 
-  // State
   bool _isLoading = true;
   bool _isTablet = false;
 
-  // Odoo Scraped Data
   String? _currentOrderRef;
   String? _currentUuid;
 
-  // Options
   late InAppWebViewGroupOptions _commonWebViewOptions;
 
-  // Scripts
+  // --- CRITICAL FIX: DISABLE BROKEN NATIVE DETECTOR ---
+  // We explicitly DELETE the native BarcodeDetector.
+  // This prevents the "Hint option provided, but is empty" crash.
+  // It forces Odoo to use its internal JS fallback (like jsQR) which works.
   final UserScript _apiDisablerScript = UserScript(
     source: """
-      window.BarcodeDetector = class BarcodeDetector {
-        static getSupportedFormats() { return Promise.resolve([]); }
-        constructor() { }
-        detect() { return Promise.resolve([]); }
-      };
+      console.log("Removing broken native BarcodeDetector...");
+      try {
+        delete window.BarcodeDetector;
+        // Also clear from prototype if it exists there
+        if (window.BarcodeDetector) {
+            window.BarcodeDetector = undefined;
+        }
+      } catch(e) {
+        console.log("Error deleting BarcodeDetector: " + e);
+      }
     """,
     injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
   );
@@ -114,7 +117,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         javaScriptCanOpenWindowsAutomatically: true, 
       ),
       android: AndroidInAppWebViewOptions(
-        useHybridComposition: false, 
+        useHybridComposition: true, // Essential for Odoo's getUserMedia camera access
         supportMultipleWindows: true,
         mixedContentMode: AndroidMixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
         allowContentAccess: true,
@@ -222,7 +225,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                       headers: _getLanguageHeaders(),
                     ),
                     initialUserScripts: UnmodifiableListView<UserScript>([
-                      _apiDisablerScript,
+                      _apiDisablerScript, // Inject the fix
                     ]),
                     initialOptions: _commonWebViewOptions,
                     pullToRefreshController: _pullToRefreshController,
@@ -240,11 +243,14 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                       _injectCustomJavaScript(controller);
                       setState(() => _isLoading = false);
                     },
+                    
+                    // --- CAMERA PERMISSION (REQUIRED FOR ODOO JS SCANNER) ---
                     onPermissionRequest: (controller, request) async {
                       if (request.resources.contains(PermissionResourceType.CAMERA)) {
+                        // Grant permission so Odoo's 'navigator.mediaDevices.getUserMedia' works
                         return PermissionResponse(
                           resources: request.resources,
-                          action: PermissionResponseAction.DENY, 
+                          action: PermissionResponseAction.GRANT, 
                         );
                       }
                       return PermissionResponse(
@@ -252,6 +258,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                         action: PermissionResponseAction.GRANT,
                       );
                     },
+                    
                     onDownloadStartRequest: (controller, downloadRequest) async {
                       _onDownloadStart(controller, downloadRequest);
                     },
@@ -327,6 +334,14 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     child: InAppWebView(
                       windowId: createWindowRequest.windowId,
                       initialOptions: _commonWebViewOptions,
+                      
+                      // Ensure popups also allow camera
+                      onPermissionRequest: (controller, request) async {
+                         return PermissionResponse(
+                            resources: request.resources,
+                            action: PermissionResponseAction.GRANT);
+                      },
+                      
                       onCreateWindow: (childController, childRequest) async {
                           return _handlePopupWindow(context, childRequest);
                       },
@@ -402,16 +417,24 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       },
     );
 
-    // 2. Native QR Scanner Handler [HANDLES LANGUAGE]
+    // 2. Native QR Scanner Handler (Only for Products)
     controller.addJavaScriptHandler(
       handlerName: 'NativeQRScanner',
       callback: (args) async {
         
-        // --- READ LANGUAGE FROM JS ---
         String lang = 'en_US'; 
         if (args.isNotEmpty && args[0] != null) {
           lang = args[0].toString();
         }
+
+        String scanType = 'product';
+        if (args.length > 1 && args[1] != null) {
+          scanType = args[1].toString();
+        }
+
+        // --- PRODUCT SCANNING (NATIVE FLUTTER) ---
+        // If it's a customer scan, we return and let Odoo handle it internally.
+        if (scanType == 'customer') return;
 
         final String? qrData = await Navigator.push<String>(
           context,
@@ -421,10 +444,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         );
 
         if (qrData != null && qrData.isNotEmpty) {
-          String filteredData = _extractDataFromQr(qrData);
+          String filteredData = _extractDataFromQr(qrData); 
           final String escapedQrData = filteredData.replaceAll("'", "\\'");
           String script = "if(window.onFlutterBarcodeScanned) { window.onFlutterBarcodeScanned('$escapedQrData'); }";
-          _webViewController?.evaluateJavascript(source: script);
+          await controller.evaluateJavascript(source: script);
         }
       },
     );
@@ -759,7 +782,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     // Note: This script performs DOM manipulation to:
     // 1. Scrape Transaction/UUID
     // 2. Hijack Barcode/Scanner inputs
-    // 3. Hijack Buttons for native features
+    // 3. Hijack Buttons for native features (ONLY Products)
     // 4. E-Invoice Listener
     // 5. Print Receipt Hijacking
 
@@ -769,33 +792,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
       // ============================================================
       // 1. BARCODE INPUT HANDLER
-      // Purpose: This is the function Flutter calls when YOU scan a barcode with the native camera.
-      // It takes that code and tries to "type" it into Odoo's search bars automatically.
       // ============================================================
       window.onFlutterBarcodeScanned = function(code) {
           console.log("Received barcode: " + code);
           
-          // --- LOGIC A: Customer Search (POS) ---
-          // If the "Search Customers" modal is open, type the barcode there.
-          var partnerSearchInput = document.querySelector('input[placeholder="Search Customers..."]') || document.querySelector('.sb-partner input');
-          if (partnerSearchInput && partnerSearchInput.offsetParent !== null) {
-            partnerSearchInput.setAttribute('inputmode', 'none'); // Prevent keyboard from popping up
-            partnerSearchInput.focus();
-            partnerSearchInput.value = code;
-            
-            // We must dispatch these events so Odoo's Javascript framework (Owl) detects the change
-            partnerSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
-            partnerSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
-            partnerSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-            
-            partnerSearchInput.blur();
-            setTimeout(() => { partnerSearchInput.removeAttribute('inputmode'); }, 200);
-            return;
-          }
-
-          // --- LOGIC B: Product Search (POS) ---
-          // If we are on the main POS screen, type into the product search bar.
-          // [UPDATED] Added 'Carian produk...' selector to ensure it works in Malay mode too
+          // --- LOGIC: Product Search (POS) ---
+          // Updated to cover both English and Malay placeholders
           var productSearchInput = document.querySelector('input[placeholder="Search products..."]') || document.querySelector('input[placeholder="Carian produk..."]') || document.querySelector('.products-widget-control input');
           if (productSearchInput && productSearchInput.offsetParent !== null) {
             productSearchInput.setAttribute('inputmode', 'none');
@@ -810,7 +812,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             setTimeout(() => { productSearchInput.removeAttribute('inputmode'); }, 200);
             
             // Special Trick: After scanning, try to automatically click the "Add" (+) button 
-            // or select the first product that appears.
             setTimeout(function() {
                 var plusIcon = document.querySelector('#qty_btn_product .fa-plus');
                 if (plusIcon && plusIcon.closest('a')) {
@@ -823,14 +824,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             return;
           }
 
-          // --- LOGIC C: Fallback (Inventory/Generic) ---
-          // If we aren't in POS, simulate raw keyboard presses. 
-          // This works for Barcode Action forms in Inventory.
+          // --- LOGIC: Fallback (Generic Input) ---
           window.dispatchEvent(new CustomEvent('barcode_scanned', { detail: code }));
           var target = document.activeElement || document.body;
           
           if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-            // Standard Input typing
             target.setAttribute('inputmode', 'none');
             target.value = code;
             target.dispatchEvent(new Event('change', { bubbles: true }));
@@ -838,7 +836,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             target.blur();
             setTimeout(() => { target.removeAttribute('inputmode'); }, 200);
           } else {
-            // Raw Keypress simulation (for Odoo's global listener)
+            // Raw Keypress simulation
             for (var i = 0; i < code.length; i++) {
                 document.body.dispatchEvent(new KeyboardEvent('keypress', { key: code[i], char: code[i], bubbles: true }));
             }
@@ -847,9 +845,10 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       };
 
       // ============================================================
-      // 2. CAMERA HIJACKER (Button Replacement & Translation Logic)
+      // 2. CAMERA HIJACKER (ONLY FOR PRODUCT SCANNING)
       // ============================================================
       function hijackButtons() {
+          // Selectors for buttons that usually trigger a scanner
           var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode'];
 
           selectors.forEach(function(sel) {
@@ -858,16 +857,21 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                   // Find the actual button container
                   var btn = el.closest('button') || el.closest('.btn') || el;
                   
-                  // [FIX] For your XML structure: the click listener is on the parent div of fa-barcode
-                  if(el.classList.contains('fa-barcode')) {
-                     var possibleParent = el.parentElement;
-                     // Check if parent has the specific Odoo click handler or just treat parent as button
-                     if(possibleParent) {
+                  // Handle icons usually nested in divs
+                  if(el.classList.contains('fa-barcode') || el.classList.contains('fa-qrcode')) {
+                      var possibleParent = el.parentElement;
+                      if(possibleParent) {
                         btn = possibleParent;
-                     }
+                      }
                   }
 
-                  // Check if we already hijacked it
+                  // --- CRITICAL CHECK: IGNORE CUSTOMER QR BUTTONS ---
+                  // If this button has the fa-qrcode class (or contains it), we assume it's the Customer Scanner.
+                  // We do NOT hijack it, so Odoo's native JS will run instead.
+                  var isCustomerBtn = el.classList.contains('fa-qrcode') || el.querySelector('.fa-qrcode');
+                  if (isCustomerBtn) return;
+
+                  // --- HIJACK PRODUCT/BARCODE BUTTONS ---
                   if (btn && !btn.getAttribute('data-flutter-hijacked')) {
                       btn.setAttribute('data-flutter-hijacked', 'true');
 
@@ -877,25 +881,18 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                           e.stopPropagation();
                           e.stopImmediatePropagation();
                           
-                          // [UPDATE START] TRANSLATION LOGIC -----------------------
-                          var currentLang = 'en_US'; // Default English
-                          
-                          // Check 1: Look for the Malay placeholder from your XML
+                          // --- DETERMINE LANGUAGE ---
+                          var currentLang = 'en_US'; 
                           if (document.querySelector('input[placeholder="Carian produk..."]')) {
                               currentLang = 'ms_MY';
-                          }
-                          // Check 2: Fallback to URL parameter
-                          else if (window.location.href.indexOf('lang=ms_MY') > -1) {
+                          } else if (window.location.href.indexOf('lang=ms_MY') > -1) {
                               currentLang = 'ms_MY';
-                          }
-                          // Check 3: Fallback to HTML lang tag
-                          else if (document.documentElement.lang.includes('ms')) {
+                          } else if (document.documentElement.lang.includes('ms')) {
                               currentLang = 'ms_MY';
                           }
                           
-                          // Pass the detected language to Flutter
-                          window.flutter_inappwebview.callHandler('NativeQRScanner', currentLang);
-                          // [UPDATE END] -------------------------------------------
+                          // Call Flutter for Product Scanning (Default 'product')
+                          window.flutter_inappwebview.callHandler('NativeQRScanner', currentLang, 'product');
                           
                       }, true); 
                   }
@@ -906,14 +903,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       // Run immediately and every 1s to catch new buttons
       hijackButtons();
       setInterval(hijackButtons, 1000);
-
-      // ============================================================
-      // 3. RECEIPT & E-INVOICE CODE
-      // ============================================================
-      
-      document.body.addEventListener('click', function(e) {
-          
-      });
 
     })();
     """;
