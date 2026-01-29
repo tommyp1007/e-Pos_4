@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart'; // package is correct
+import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart'; 
 import 'package:permission_handler/permission_handler.dart';
 
 class CameraAccessHelper {
@@ -36,32 +36,25 @@ class CameraAccessHelper {
     if (source == null) return null;
 
     // 2. Handle Permissions
-    // We request specific permissions based on the source to be efficient
     PermissionStatus status;
     if (source == ImageSource.camera) {
+      // Camera always needs permission
       status = await Permission.camera.request();
     } else {
-      // Android 13+ uses photos, older uses storage
+      // GALLERY LOGIC
       if (Platform.isAndroid) {
-         // Simple check: Request both, the OS handles which one applies
-         Map<Permission, PermissionStatus> statuses = await [
-           Permission.storage, 
-           Permission.photos
-         ].request();
-         
-         // If either is granted, we are good
-         if (statuses[Permission.storage]!.isGranted || statuses[Permission.photos]!.isGranted) {
-            status = PermissionStatus.granted;
-         } else {
-            status = PermissionStatus.denied;
-         }
+        // [FIX FOR GOOGLE PLAY]
+        // On Android 13+, image_picker uses the "Photo Picker" which requires NO permissions.
+        // On older Android, image_picker handles the intent gracefully.
+        // We MUST NOT request Permission.photos (READ_MEDIA_IMAGES) here, or Google will reject the app.
+        status = PermissionStatus.granted; 
       } else {
-        // iOS
+        // iOS still requires explicit permission for the gallery
         status = await Permission.photos.request();
       }
     }
 
-    // SAFETY CHECK: If permission denied, stop here to prevent crash
+    // SAFETY CHECK: If permission denied (mainly for Camera or iOS), stop here.
     if (status.isPermanentlyDenied || status.isDenied) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -94,7 +87,8 @@ class CameraAccessHelper {
 
   static Future<void> _saveToGallery(String path, BuildContext context) async {
     try {
-      // 🛠️ FIX: Class name changed from ImageGallerySaver to ImageGallerySaverPlus
+      // Note: On Android 10+ (Scoped Storage), saving to the gallery usually 
+      // does not require WRITE_EXTERNAL_STORAGE if using standard MediaStore APIs.
       final result = await ImageGallerySaverPlus.saveFile(path);
       
       print("File saved to gallery: $result");

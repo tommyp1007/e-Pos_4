@@ -1,19 +1,19 @@
-// File: lib/web_view_screen.dart
-
 import 'dart:async';
 import 'dart:collection';
-import 'dart:convert'; // Required for base64Decode
+import 'dart:convert'; // Required for base64Decode & JSON
 import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 // --- PACKAGES ---
-import 'package:external_path/external_path.dart';
+// [FIX] Removed ExternalPath to comply with Google Play Policy (Not needed for App-Specific storage)
+// import 'package:external_path/external_path.dart'; 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_presentation_display/flutter_presentation_display.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
@@ -24,7 +24,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 // --- LOCAL SCREENS ---
 import 'package:epos/pdf_viewer_screen.dart';
-import 'package:epos/qr_scanner_screen.dart';     // For Product Scanning
+import 'package:epos/qr_scanner_screen.dart';
+import 'package:epos/scraper_odoo.dart'; // <--- Import the scraper file
 
 class WebViewScreen extends StatefulWidget {
   final String url;
@@ -46,6 +47,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   
   final CookieManager _cookieManager = CookieManager.instance();
 
+  // --- DUAL SCREEN MANAGER ---
+  final FlutterPresentationDisplay _displayManager = FlutterPresentationDisplay();
+
   bool _isLoading = true;
   bool _isTablet = false;
 
@@ -55,15 +59,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   late InAppWebViewGroupOptions _commonWebViewOptions;
 
   // --- CRITICAL FIX: DISABLE BROKEN NATIVE DETECTOR ---
-  // We explicitly DELETE the native BarcodeDetector.
-  // This prevents the "Hint option provided, but is empty" crash.
-  // It forces Odoo to use its internal JS fallback (like jsQR) which works.
   final UserScript _apiDisablerScript = UserScript(
     source: """
       console.log("Removing broken native BarcodeDetector...");
       try {
         delete window.BarcodeDetector;
-        // Also clear from prototype if it exists there
         if (window.BarcodeDetector) {
             window.BarcodeDetector = undefined;
         }
@@ -95,6 +95,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         }
       },
     );
+
+    // --- NEW: INIT DUAL SCREEN LOGIC (Android Only) ---
+    if (Platform.isAndroid) {
+      _initDualScreen();
+    }
   }
 
   @override
@@ -150,6 +155,50 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       } else if (state == AppLifecycleState.resumed) {
         _webViewController?.resume();
       }
+    }
+  }
+
+  // ===========================================================================
+  // MARK: - DUAL SCREEN LOGIC (UPDATED FOR PURE FLUTTER)
+  // ===========================================================================
+
+  /// Initialize listeners for screen connection/disconnection
+  void _initDualScreen() {
+    // 1. Check for displays immediately on startup
+    _checkAndShowDisplay();
+
+    // 2. Listen for future changes (HDMI plugged/unplugged)
+    _displayManager.connectedDisplaysChangedStream.listen((event) {
+      log("Display connection changed. Refreshing...");
+      _checkAndShowDisplay();
+    });
+  }
+
+  /// Checks available displays and launches the presentation route if a 2nd screen exists
+  Future<void> _checkAndShowDisplay() async {
+    try {
+      final displays = await _displayManager.getDisplays();
+      
+      if (displays != null && displays.length > 1) {
+        // We have a secondary screen!
+        final secondaryDisplay = displays.last; 
+        
+        final int displayId = secondaryDisplay.displayId ?? 0;
+
+        // If it's the main screen, ignore
+        if (displayId == 0) return; 
+
+        log("Secondary Display Detected: ID $displayId");
+
+        // 1. Launch the "presentation" route on that display
+        // We do NOT send a URL anymore because the second screen is Native Flutter
+        await _displayManager.showSecondaryDisplay(
+          displayId: displayId, 
+          routerName: "presentation",
+        );
+      }
+    } catch (e) {
+      log("Dual Screen Error: $e");
     }
   }
 
@@ -238,24 +287,24 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                       _webViewController = controller;
                       _registerMainJavaScriptHandlers(controller);
                     },
-                    onLoadStop: (controller, url) {
+                    onLoadStop: (controller, url) async { 
                       _pullToRefreshController.endRefreshing();
-                      _injectCustomJavaScript(controller);
+                      
+                      // --- INJECT SCRAPER FROM EXTERNAL FILE ---
+                      await controller.evaluateJavascript(source: OdooScraper.script);
+                      
                       setState(() => _isLoading = false);
+                      
+                      if (Platform.isAndroid) {
+                        _checkAndShowDisplay();
+                      }
                     },
                     
-                    // --- CAMERA PERMISSION (REQUIRED FOR ODOO JS SCANNER) ---
+                    // --- CAMERA PERMISSION ---
                     onPermissionRequest: (controller, request) async {
-                      if (request.resources.contains(PermissionResourceType.CAMERA)) {
-                        // Grant permission so Odoo's 'navigator.mediaDevices.getUserMedia' works
-                        return PermissionResponse(
-                          resources: request.resources,
-                          action: PermissionResponseAction.GRANT, 
-                        );
-                      }
                       return PermissionResponse(
                         resources: request.resources,
-                        action: PermissionResponseAction.GRANT,
+                        action: PermissionResponseAction.GRANT, 
                       );
                     },
                     
@@ -335,9 +384,8 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                       windowId: createWindowRequest.windowId,
                       initialOptions: _commonWebViewOptions,
                       
-                      // Ensure popups also allow camera
                       onPermissionRequest: (controller, request) async {
-                         return PermissionResponse(
+                          return PermissionResponse(
                             resources: request.resources,
                             action: PermissionResponseAction.GRANT);
                       },
@@ -491,6 +539,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               format: PdfPageFormat.roll80,
             );
 
+            // [FIXED] Use temporary directory for preview, share later
             final tempDir = await getTemporaryDirectory();
             final tempFile = File('${tempDir.path}/$fileName');
             await tempFile.writeAsBytes(pdfBytes, flush: true);
@@ -506,6 +555,24 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
           } catch (e) {
             log("Error processing receipt: $e");
           }
+        }
+      },
+    );
+
+    // -------------------------------------------------------------------------
+    // 5. [NEW] CART UPDATE HANDLER FOR SECONDARY DISPLAY
+    // -------------------------------------------------------------------------
+    controller.addJavaScriptHandler(
+      handlerName: 'UpdateCustomerDisplay',
+      callback: (args) async {
+        if (args.isNotEmpty) {
+          String jsonString = args[0];
+          // log("Sending Cart Update: $jsonString");
+          // Send JSON to the Pure Flutter Screen
+          await _displayManager.transferDataToPresentation({
+            "type": "display_update", // Matches new CustomerScreen logic
+            "payload": jsonDecode(jsonString)
+          });
         }
       },
     );
@@ -594,18 +661,24 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
   Future<void> _saveDataToFile(List<int> bytes, String mimeType, String? suggestedFileName) async {
     try {
-      String timestamp = DateTime.now()
-          .toString()              
-          .split('.')[0]          
-          .replaceAll(':', '-')    
-          .replaceAll(' ', '_');  
+      // [FIX] Force rename PDF files to "MyInvois_e-POS_Report_TIMESTAMP.pdf"
+      String fileName;
+      
+      if (mimeType == 'application/pdf') {
+        // STRICTLY FORCE RENAME FOR PDFS
+        fileName = "MyInvois_e-POS_Report_${DateTime.now().millisecondsSinceEpoch}.pdf";
+      } else {
+        // For non-PDFs, keep existing fallback logic
+        String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+        fileName = (suggestedFileName != null && suggestedFileName.isNotEmpty)
+            ? suggestedFileName
+            : "Download_$timestamp";
+      }
 
-      String fileName = suggestedFileName != null && suggestedFileName.isNotEmpty 
-          ? suggestedFileName 
-          : "MyInvois e-POS_$timestamp.pdf";
-
+      // Cleanup filename characters
       fileName = fileName.replaceAll('/', '_').replaceAll('\\', '_');
 
+      // Ensure extension correctness
       if (mimeType == 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')) {
         fileName += '.pdf';
       }
@@ -613,7 +686,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       String filePath = "";
 
       if (Platform.isAndroid) {
-        String path = await ExternalPath.getExternalStoragePublicDirectory(ExternalPath.DIRECTORY_DOWNLOAD);
+        // [COMPLIANCE FIX] Use App-Specific Storage instead of Public Downloads
+        // This removes the need for MANAGE_EXTERNAL_STORAGE permissions.
+        final Directory? appDir = await getExternalStorageDirectory();
+        final String path = appDir?.path ?? (await getApplicationDocumentsDirectory()).path;
+        
         File file = File('$path/$fileName');
 
         if (await file.exists()) {
@@ -629,12 +706,16 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Saved: $fileName'),
+            content: const Text('File saved to private storage.'),
             backgroundColor: Colors.green,
+            duration: const Duration(seconds: 6),
             action: SnackBarAction(
-              label: 'OPEN',
+              label: 'SHARE / SAVE', // Suggestion to user
               textColor: Colors.white,
-              onPressed: () => _openFile(filePath),
+              onPressed: () {
+                 // Open share sheet so they can save to Drive/Downloads manually
+                 Share.shareXFiles([XFile(filePath)], text: "Here is your file.");
+              },
             ),
           ));
         }
@@ -685,10 +766,9 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     await _initNotifications();
     await Permission.camera.request();
     if (Platform.isAndroid) {
-      if (await Permission.storage.request().isGranted) {
-      } else if (await Permission.manageExternalStorage.status.isDenied) {
-        await Permission.manageExternalStorage.request();
-      }
+      // [COMPLIANCE FIX] Removed MANAGE_EXTERNAL_STORAGE request.
+      // App-Specific storage does not require runtime storage permissions on Android 10+.
+      // We only request notification permission now.
       await Permission.notification.request();
     }
   }
@@ -730,7 +810,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       await flutterLocalNotificationsPlugin.show(
         DateTime.now().millisecond,
         'Download Complete',
-        fileName,
+        'Tap to view options (Share/Save)', // [FIX] Added reminder text
         const NotificationDetails(android: androidDetails),
         payload: filePath,
       );
@@ -768,7 +848,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   // ===========================================================================
-  // MARK: - JAVASCRIPT INJECTION LOGIC
+  // MARK: - JAVASCRIPT INJECTION LOGIC (SUPER SCRAPER)
   // ===========================================================================
 
   Future<void> _injectBlobFetcherScript(InAppWebViewController controller) async {
@@ -778,134 +858,11 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     await controller.evaluateJavascript(source: script);
   }
 
+  // ===========================================================================
+  // FIXED ROBUST SCRAPER FOR ODOO 17
+  // ===========================================================================
   Future<void> _injectCustomJavaScript(InAppWebViewController controller) async {
-    // Note: This script performs DOM manipulation to:
-    // 1. Scrape Transaction/UUID
-    // 2. Hijack Barcode/Scanner inputs
-    // 3. Hijack Buttons for native features (ONLY Products)
-    // 4. E-Invoice Listener
-    // 5. Print Receipt Hijacking
-
-    String script = """
-    (function() {
-      console.log("Injecting Odoo Mobile Hooks...");
-
-      // ============================================================
-      // 1. BARCODE INPUT HANDLER
-      // ============================================================
-      window.onFlutterBarcodeScanned = function(code) {
-          console.log("Received barcode: " + code);
-          
-          // --- LOGIC: Product Search (POS) ---
-          // Updated to cover both English and Malay placeholders
-          var productSearchInput = document.querySelector('input[placeholder="Search products..."]') || document.querySelector('input[placeholder="Carian produk..."]') || document.querySelector('.products-widget-control input');
-          if (productSearchInput && productSearchInput.offsetParent !== null) {
-            productSearchInput.setAttribute('inputmode', 'none');
-            productSearchInput.focus();
-            productSearchInput.value = code;
-            
-            // Trigger Odoo to filter products
-            productSearchInput.dispatchEvent(new Event('input', { bubbles: true }));
-            productSearchInput.dispatchEvent(new Event('change', { bubbles: true }));
-            productSearchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-            productSearchInput.blur();
-            setTimeout(() => { productSearchInput.removeAttribute('inputmode'); }, 200);
-            
-            // Special Trick: After scanning, try to automatically click the "Add" (+) button 
-            setTimeout(function() {
-                var plusIcon = document.querySelector('#qty_btn_product .fa-plus');
-                if (plusIcon && plusIcon.closest('a')) {
-                  plusIcon.closest('a').click();
-                } else {
-                  var firstProduct = document.querySelector('article.product');
-                  if (firstProduct) firstProduct.click();
-                }
-            }, 700);
-            return;
-          }
-
-          // --- LOGIC: Fallback (Generic Input) ---
-          window.dispatchEvent(new CustomEvent('barcode_scanned', { detail: code }));
-          var target = document.activeElement || document.body;
-          
-          if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-            target.setAttribute('inputmode', 'none');
-            target.value = code;
-            target.dispatchEvent(new Event('change', { bubbles: true }));
-            target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-            target.blur();
-            setTimeout(() => { target.removeAttribute('inputmode'); }, 200);
-          } else {
-            // Raw Keypress simulation
-            for (var i = 0; i < code.length; i++) {
-                document.body.dispatchEvent(new KeyboardEvent('keypress', { key: code[i], char: code[i], bubbles: true }));
-            }
-            document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-          }
-      };
-
-      // ============================================================
-      // 2. CAMERA HIJACKER (ONLY FOR PRODUCT SCANNING)
-      // ============================================================
-      function hijackButtons() {
-          // Selectors for buttons that usually trigger a scanner
-          var selectors = ['.o_mobile_barcode_button', '.o_stock_barcode_main_button', '.fa-qrcode', '.fa-barcode'];
-
-          selectors.forEach(function(sel) {
-              var elements = document.querySelectorAll(sel);
-              elements.forEach(function(el) {
-                  // Find the actual button container
-                  var btn = el.closest('button') || el.closest('.btn') || el;
-                  
-                  // Handle icons usually nested in divs
-                  if(el.classList.contains('fa-barcode') || el.classList.contains('fa-qrcode')) {
-                      var possibleParent = el.parentElement;
-                      if(possibleParent) {
-                        btn = possibleParent;
-                      }
-                  }
-
-                  // --- CRITICAL CHECK: IGNORE CUSTOMER QR BUTTONS ---
-                  // If this button has the fa-qrcode class (or contains it), we assume it's the Customer Scanner.
-                  // We do NOT hijack it, so Odoo's native JS will run instead.
-                  var isCustomerBtn = el.classList.contains('fa-qrcode') || el.querySelector('.fa-qrcode');
-                  if (isCustomerBtn) return;
-
-                  // --- HIJACK PRODUCT/BARCODE BUTTONS ---
-                  if (btn && !btn.getAttribute('data-flutter-hijacked')) {
-                      btn.setAttribute('data-flutter-hijacked', 'true');
-
-                      // Add Capture Phase Listener (Trigger Native Scanner)
-                      btn.addEventListener('click', function(e) {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          e.stopImmediatePropagation();
-                          
-                          // --- DETERMINE LANGUAGE ---
-                          var currentLang = 'en_US'; 
-                          if (document.querySelector('input[placeholder="Carian produk..."]')) {
-                              currentLang = 'ms_MY';
-                          } else if (window.location.href.indexOf('lang=ms_MY') > -1) {
-                              currentLang = 'ms_MY';
-                          } else if (document.documentElement.lang.includes('ms')) {
-                              currentLang = 'ms_MY';
-                          }
-                          
-                          // Call Flutter for Product Scanning (Default 'product')
-                          window.flutter_inappwebview.callHandler('NativeQRScanner', currentLang, 'product');
-                          
-                      }, true); 
-                  }
-              });
-          });
-      }
-
-      // Run immediately and every 1s to catch new buttons
-      hijackButtons();
-      setInterval(hijackButtons, 1000);
-
-    })();
-    """;
-    await controller.evaluateJavascript(source: script);
+    // --- UPDATED: NOW USES THE EXTERNAL SCRAPER FILE ---
+    await controller.evaluateJavascript(source: OdooScraper.script);
   }
 }

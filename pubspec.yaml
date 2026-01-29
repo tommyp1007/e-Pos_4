@@ -2,7 +2,7 @@ name: epos
 description: "A new Flutter project."
 publish_to: 'none'
 
-version: 1.0.0+4
+version: 2.0.0+9
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -17,6 +17,9 @@ dependencies:
   permission_handler: ^12.0.1
   connectivity_plus: ^7.0.0
   device_info_plus: ^12.3.0
+
+  # Sub screen
+  flutter_presentation_display: ^2.0.6
 
   # Networking
   dio: ^5.5.0

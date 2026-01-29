@@ -1,4 +1,4 @@
-package lhdn.myinvois.epos.preprod
+package lhdn.myinvois.epos
 
 import io.flutter.embedding.android.FlutterActivity
 

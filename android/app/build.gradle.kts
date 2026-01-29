@@ -18,14 +18,14 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "lhdn.myinvois.epos.preprod"
+    namespace = "lhdn.myinvois.epos"
 
     // ✅ Match Flutter/AGP requirements
     compileSdk = 36
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "lhdn.myinvois.epos.preprod"
+        applicationId = "lhdn.myinvois.epos"
         minSdk = 26
         targetSdk = 36
 

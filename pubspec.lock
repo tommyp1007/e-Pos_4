@@ -374,6 +374,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.0.33"
+  flutter_presentation_display:
+    dependency: "direct main"
+    description:
+      name: flutter_presentation_display
+      sha256: c8654ac00b719c59fb911d4494f22a0a067d14bb7587b8ae6e405ce16ca9cc9f
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.0.6"
   flutter_test:
     dependency: "direct dev"
     description: flutter
