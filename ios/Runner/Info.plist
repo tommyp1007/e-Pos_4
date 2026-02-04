@@ -75,7 +75,7 @@
 
     <key>BGTaskSchedulerPermittedIdentifiers</key>
     <array>
-        <string>lhdn.myinvois.epos.backgroundtask</string>
+        <string>lhdn.myinvois.epos.preprod.backgroundtask</string>
     </array>
 
     <key>NSAppTransportSecurity</key>
